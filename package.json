@@ -1,0 +1,17 @@
+{
+  "name": "realtime-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check-proxy": "node check-proxy.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "https-proxy-agent": "^9.1.0",
+    "ws": "^8.21.3"
+  }
+}

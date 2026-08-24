@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Realtime AI 语音通话 Demo</title>
+<style>
+  body {
+    font-family: -apple-system, "Microsoft YaHei", sans-serif;
+    max-width: 640px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background: #0f1115;
+    color: #e6e6e6;
+  }
+  h1 { font-size: 20px; }
+  #status {
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #1c1f26;
+    margin-bottom: 16px;
+    font-size: 14px;
+  }
+  button {
+    padding: 10px 20px;
+    font-size: 15px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    margin-right: 8px;
+  }
+  #startBtn { background: #22c55e; color: #052e16; }
+  #stopBtn { background: #ef4444; color: #450a0a; }
+  #stopBtn:disabled, #startBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #log {
+    margin-top: 20px;
+    border: 1px solid #2a2e37;
+    border-radius: 8px;
+    padding: 12px;
+    height: 320px;
+    overflow-y: auto;
+    background: #14161b;
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  .msg-user { color: #60a5fa; }
+  .msg-ai { color: #4ade80; }
+  .msg-sys { color: #888; font-size: 12px; }
+  select, input {
+    background: #1c1f26;
+    color: #e6e6e6;
+    border: 1px solid #2a2e37;
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  /* 没有扬声器，靠这两条音量表判断谁在说话 */
+  .meter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+  }
+  .meter-label {
+    width: 96px;
+    font-size: 14px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3a3f4a;
+    flex-shrink: 0;
+    transition: background 0.1s;
+  }
+  .dot.on { box-shadow: 0 0 8px currentColor; }
+  #remoteDot.on { background: #60a5fa; color: #60a5fa; }
+  #aiDot.on { background: #4ade80; color: #4ade80; }
+  .meter-track {
+    flex: 1;
+    height: 12px;
+    background: #1c1f26;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .meter-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 6px;
+    transition: width 0.06s linear;
+  }
+  #remoteFill { background: linear-gradient(90deg, #1e3a8a, #60a5fa); }
+  #aiFill { background: linear-gradient(90deg, #14532d, #4ade80); }
+  .live { opacity: 0.65; font-style: italic; }
+  .voice-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 4px;
+  }
+  /* 99 个音色，不给个筛选框根本没法翻 */
+  #voiceFilter { width: 190px; flex-shrink: 0; }
+  #voiceSelect { flex: 1; min-width: 0; }
+  button.mini {
+    padding: 6px 12px;
+    font-size: 13px;
+    margin-right: 0;
+    background: #334155;
+    color: #e2e8f0;
+    flex-shrink: 0;
+  }
+  .hint { font-size: 12px; color: #777; margin-top: 5px; min-height: 16px; }
+</style>
+</head>
+<body>
+  <h1>🎙️ Realtime AI 语音通话 Demo</h1>
+  <div id="status">状态：未连接</div>
+
+  <div style="margin-bottom: 12px;">
+    <label>输出设备（选 CABLE Input 可把 AI 声音送进 LINE 麦克风）：</label><br/>
+    <select id="outputDevice"></select>
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label>输入设备（要选能听到对方声音的那一路，如 CABLE Output / 立体声混音）：</label><br/>
+    <select id="inputDevice"></select>
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label>AI 音色（通话中不能改，要改先挂断）：</label><br/>
+    <div class="voice-row">
+      <input id="voiceFilter" placeholder="筛选：打 男 / 女 / 沉稳 / 客服 …" />
+      <select id="voiceSelect"></select>
+      <button id="voiceDemoBtn" class="mini">▶ 试听</button>
+    </div>
+    <div id="voiceHint" class="hint"></div>
+    <div style="margin-top: 8px;">
+      <label style="font-size: 13px; color: #999;">
+        <input type="checkbox" id="useCustomVoice" /> 用我自己复刻的音色
+      </label>
+      <div id="customVoiceRow" class="voice-row" style="display: none;">
+        <input id="customVoiceId" placeholder="复刻音色 ID，通常是 S_ 开头" style="flex: 1;" />
+      </div>
+      <div id="customVoiceHint" class="hint"></div>
+    </div>
+  </div>
+
+  <button id="startBtn">开始通话</button>
+  <button id="stopBtn" disabled>结束通话</button>
+  <button id="testBtn" style="background: #3b82f6; color: #0b1220;">🔊 测试输出</button>
+  <button id="recBtn" style="background: #a855f7; color: #1a0b26;">⏺️ 录制 AI 语音</button>
+  <button id="netBtn" style="background: #f59e0b; color: #2a1a00;">📶 测线路</button>
+
+  <div style="margin: 12px 0; font-size: 13px; color: #888;">
+    <label><input type="checkbox" id="debugMode" /> 调试模式（显示轨道、采集参数、收发包统计）</label>
+  </div>
+
+  <div class="meter-row">
+    <div class="meter-label"><span class="dot" id="remoteDot"></span><span>对方</span></div>
+    <div class="meter-track"><div class="meter-fill" id="remoteFill"></div></div>
+  </div>
+  <div class="meter-row">
+    <div class="meter-label"><span class="dot" id="aiDot"></span><span>AI</span></div>
+    <div class="meter-track"><div class="meter-fill" id="aiFill"></div></div>
+  </div>
+
+  <div id="log"></div>
+
+  <audio id="aiAudio" autoplay></audio>
+  <audio id="testAudio" loop></audio>
+
+<script>
+// ================= 架构 =================
+// 浏览器采音 → 本地 Node 服务(/ws) → 火山ASR → OpenAI LLM → 火山TTS → 原路返回。
+// 浏览器这一端只管三件事：采音上传、按服务端指令播放/暂停/丢弃、汇报播了多久。
+// 所有的轮次判断、打断决策、上下文管理都在服务端，这边不做任何决定。
+// 音频格式两端写死：24000Hz 单声道 16bit 小端 PCM，base64 塞在 JSON 事件里传。
+//
+// 「汇报播了多久」这件事看着琐碎，其实是打断能不能对齐的唯一依据：
+// 只有浏览器知道声卡实际吐出去多少毫秒，服务端据此才能把 AI 那句话
+// 截在客户真正听到的地方写进历史。
+// ========================================
+
+let ws = null;
+let running = false;
+
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const statusEl = document.getElementById("status");
+const logEl = document.getElementById("log");
+const aiAudioEl = document.getElementById("aiAudio");
+const outputSelect = document.getElementById("outputDevice");
+const inputSelect = document.getElementById("inputDevice");
+
+// 采样率必须和服务端 lib/session.js 里的 OUT_SAMPLE_RATE 一致。
+// 改一边不改另一边不会报错，只会变调变速——最难查的那类问题。
+// 注意火山 ASR 只吃 16000Hz，那一道降采样在服务端 lib/resample.js 里做，跟这里无关
+const SAMPLE_RATE = 24000;
+// 每攒够多少个采样点发一包。960 点 = 40ms，是延迟和包数量之间比较舒服的折中
+const CHUNK_SAMPLES = 960;
+// 播放侧的抖动缓冲：收到的音频统一往后推这么多毫秒再播。
+// 走代理时到达节奏不均匀，垫这一层能把断续磨平，代价是听感延迟增加同等数值。
+const PLAY_LEAD_MS = 140;
+
+// 开场白由服务端触发（AUTO_GREET / GREET_DELAY_MS 在 .env 里），这边不管。
+// 谁先开口属于对话逻辑，跟播放无关，放在服务端才不会两头各有一套判断。
+
+// ---- 本次通话的统计 ----
+let turns = 0;      // 客户说了几轮
+let barges = 0;     // 打断了几次
+const ttfas = [];   // 每轮首字延迟：客户说完 → AI 第一声
+let thinkAt = 0;    // 本轮进入 THINKING 的时刻
+
+// ---- 排障日志 ----
+const debugModeEl = document.getElementById("debugMode");
+function dbg(text) {
+  if (debugModeEl.checked) log(text, "msg-sys");
+}
+
+function log(text, cls) {
+  const div = document.createElement("div");
+  div.className = cls || "msg-sys";
+  div.textContent = text;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text) {
+  statusEl.textContent = "状态：" + text;
+}
+
+// ---- base64 ⇄ 二进制 ----
+// 音频在 Realtime 的 JSON 事件里是 base64 字符串，收发两头都要转一道
+function bytesToB64(bytes) {
+  let s = "";
+  const step = 0x8000; // 一次塞太多参数会爆栈
+  for (let i = 0; i < bytes.length; i += step) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+  }
+  return btoa(s);
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// ================= 音频上下文 =================
+// 采集、播放、音量条共用一个 AudioContext，并且直接开在 24000Hz —— 这样
+// 麦克风进来和送去播放都不用自己写重采样，浏览器在设备边界上一次性处理掉。
+let audioCtx = null;
+let micStream = null;
+let micSource = null;
+let captureNode = null;
+let captureSink = null;
+let aiGain = null;   // AI 音频的汇聚点，播放队列全接在这里
+let aiDest = null;   // 转成 MediaStream 交给 <audio>，才能用 setSinkId 选输出设备
+
+async function ensureAudioCtx() {
+  if (audioCtx) return audioCtx;
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  if (audioCtx.state === "suspended") {
+    // resume() 在输出设备打不开时会永远不 resolve，把整个流程卡死（既不报错也不继续）。
+    // 加超时兜底，保证后面的诊断日志一定能打出来。
+    try {
+      await Promise.race([
+        audioCtx.resume(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("resume 超时 2s")), 2000)),
+      ]);
+    } catch (e) {
+      log("⚠️ AudioContext 唤醒失败: " + e.message + "（输出设备可能打不开）");
+    }
+  }
+  dbg(`🔎 AudioContext: ${audioCtx.sampleRate}Hz / ${audioCtx.state}`);
+  if (audioCtx.sampleRate !== SAMPLE_RATE) {
+    log(`⚠️ 浏览器不接受 ${SAMPLE_RATE}Hz，实际 ${audioCtx.sampleRate}Hz，音调可能不对`);
+  }
+  return audioCtx;
+}
+
+// ================= 采集：麦克风 → PCM16 → WebSocket =================
+// AudioWorklet 跑在音频线程上，主线程卡一下也不会丢采样；
+// 老浏览器没有的话回落 ScriptProcessor（会跟着主线程一起卡，但至少能用）。
+const CAPTURE_WORKLET_SRC = `
+class PcmCapture extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    this.chunk = options.processorOptions.chunkSamples;
+    this.buf = new Int16Array(this.chunk);
+    this.n = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      let s = ch[i];
+      if (s > 1) s = 1;
+      else if (s < -1) s = -1;
+      this.buf[this.n++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      if (this.n === this.chunk) {
+        const out = this.buf;
+        this.buf = new Int16Array(this.chunk);
+        this.n = 0;
+        this.port.postMessage(out.buffer, [out.buffer]);
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("pcm-capture", PcmCapture);
+`;
+
+let sentBytes = 0;
+
+function sendPcm(int16) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
+  sentBytes += bytes.length;
+  ws.send(JSON.stringify({ type: "audio.append", audio: bytesToB64(bytes) }));
+}
+
+function floatToPcm16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+async function startCapture() {
+  const inputId = inputSelect.value;
+  // 输入是虚拟声卡的线路信号，不是真人麦克风。
+  // Chrome 默认开的这三个处理是给麦克风设计的，套在这里会把对方声音削得断断续续，必须关掉。
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      ...(inputId ? { deviceId: { exact: inputId } } : {}),
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+    },
+  });
+  const settings = micStream.getAudioTracks()[0].getSettings();
+  dbg(
+    `🎚️ 采集参数: ${settings.sampleRate || "?"}Hz / AEC=${settings.echoCancellation} / NS=${settings.noiseSuppression} / AGC=${settings.autoGainControl}`
+  );
+
+  micSource = audioCtx.createMediaStreamSource(micStream);
+
+  let usedWorklet = false;
+  if (audioCtx.audioWorklet) {
+    try {
+      const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET_SRC], { type: "text/javascript" }));
+      await audioCtx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+      captureNode = new AudioWorkletNode(audioCtx, "pcm-capture", {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+        processorOptions: { chunkSamples: CHUNK_SAMPLES },
+      });
+      captureNode.port.onmessage = (e) => sendPcm(new Int16Array(e.data));
+      usedWorklet = true;
+    } catch (e) {
+      log("⚠️ AudioWorklet 加载失败，回落 ScriptProcessor: " + e.message);
+    }
+  }
+
+  if (!usedWorklet) {
+    captureNode = audioCtx.createScriptProcessor(1024, 1, 1);
+    captureNode.onaudioprocess = (e) => sendPcm(floatToPcm16(e.inputBuffer.getChannelData(0)));
+  }
+  dbg("🎚️ 采集节点: " + (usedWorklet ? "AudioWorklet（音频线程）" : "ScriptProcessor（主线程）"));
+
+  // 采集节点必须有下游才会被驱动，接一个零增益的出口到扬声器，不会真出声
+  captureSink = audioCtx.createGain();
+  captureSink.gain.value = 0;
+  micSource.connect(captureNode);
+  captureNode.connect(captureSink);
+  captureSink.connect(audioCtx.destination);
+
+  // 这路输入实际是 LINE 里对方的声音（经声卡回环进来的）
+  attachMeter(micSource, "remoteFill", "remoteDot");
+}
+
+function stopCapture() {
+  if (captureNode) {
+    if (captureNode.port) captureNode.port.onmessage = null;
+    captureNode.onaudioprocess = null;
+    captureNode.disconnect();
+    captureNode = null;
+  }
+  if (captureSink) {
+    captureSink.disconnect();
+    captureSink = null;
+  }
+  if (micSource) {
+    micSource.disconnect();
+    micSource = null;
+  }
+  if (micStream) {
+    micStream.getTracks().forEach((t) => t.stop());
+    micStream = null;
+  }
+}
+
+// ================= 播放：WebSocket → PCM16 → 声卡 =================
+// 每个音频分片排到一条时间轴上顺序播放。不能收到就 start()，
+// 那样分片之间会有几毫秒缝隙，听上去就是持续的"咔咔"电流声。
+let playCursor = 0;          // 下一个分片该在什么时刻开始播（AudioContext 时间轴）
+const playSources = new Set();
+let recvAudioBytes = 0;
+let underruns = 0;
+let scheduledMs = 0;         // 当前这轮回复已排进播放队列的音频总时长
+
+// 打断待确认期间用：先把新到的音频扣在手里不排期。
+// 为什么不是直接丢：服务端还没确认这是不是真打断，万一是杂音误报，
+// 丢了这段客户就会听到 AI 的话中间少了一截。扣着的话恢复播放能无缝接上。
+let playPaused = false;
+const pausedChunks = [];
+
+function setupPlayback() {
+  aiGain = audioCtx.createGain();
+  aiDest = audioCtx.createMediaStreamDestination();
+  aiGain.connect(aiDest);
+  // 注意：不接 audioCtx.destination。声音统一走 <audio> 元素出去，
+  // 这样才能用 setSinkId 精确指定送到 CABLE Input，而不是默认扬声器。
+  aiAudioEl.srcObject = aiDest.stream;
+  attachMeter(aiGain, "aiFill", "aiDot");
+}
+
+function pushPcm(bytes) {
+  if (!aiGain) return;
+  if (playPaused) {
+    pausedChunks.push(bytes);
+    return;
+  }
+  recvAudioBytes += bytes.length;
+  const n = bytes.length >> 1; // 按 2 字节对齐，多出来的半个采样点丢掉
+  if (n === 0) return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, n * 2);
+  const f32 = new Float32Array(n);
+  for (let i = 0; i < n; i++) f32[i] = view.getInt16(i * 2, true) / 0x8000;
+
+  const buf = audioCtx.createBuffer(1, n, SAMPLE_RATE);
+  buf.copyToChannel(f32, 0);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(aiGain);
+
+  // 判据必须是"游标已经落到当前时刻之后"，也就是队列真的播空了。
+  // 拿 currentTime + PLAY_LEAD_MS 去比是错的：每轮开头缓冲本来就不足 140ms，
+  // 那样不但每轮误报好几次欠载，还会把游标硬推到 140ms 之后，
+  // 在本来连续的音频里生生插进一个空隙——自己制造卡顿。
+  if (playCursor < audioCtx.currentTime) {
+    // 本轮刚开口时是正常的（队列本来就空），说到一半才播空才是真欠载
+    if (scheduledMs > 0) underruns++;
+    // 重新起播时垫上抖动缓冲，给后面的分片留出到达时间
+    playCursor = audioCtx.currentTime + PLAY_LEAD_MS / 1000;
+  }
+  src.start(playCursor);
+  playCursor += buf.duration;
+  scheduledMs += buf.duration * 1000;
+  playSources.add(src);
+  src.onended = () => playSources.delete(src);
+}
+
+// 已经真正出过声的毫秒数 = 排进去的总时长 - 还堆在队列里没播的
+function playedMs() {
+  const queued = Math.max(0, (playCursor - audioCtx.currentTime) * 1000);
+  return Math.max(0, scheduledMs - queued);
+}
+
+// 服务端怀疑有人插话时用：先按住，别急着丢。
+// 已经排进声卡的那 100 多毫秒还是会播完，听感上就是一句话自然收了尾。
+// 同时把"到此为止播了多少毫秒"汇报上去——服务端就靠这个数把 AI 那句话
+// 截在客户真正听到的位置，不然模型会以为自己已经讲完了。
+function pausePlayback() {
+  if (playPaused) return;
+  playPaused = true;
+  sendEvent({ type: "playback.report", playedMs: Math.round(playedMs()) });
+}
+
+// 误报，接着播。扣在手里的分片按原顺序补回去，一个字都不会漏
+function resumePlayback() {
+  if (!playPaused) return;
+  playPaused = false;
+  const queued = pausedChunks.splice(0);
+  for (const b of queued) pushPcm(b);
+}
+
+// 确认是真打断：把还没播的全部扔掉。
+// 服务端停止生成只解决"不再产生新的"，已经发到本地的音频得自己丢，
+// 不丢的话对方打断了还要再听 AI 说一两秒，非常出戏。
+function flushPlayback() {
+  for (const s of playSources) {
+    try {
+      s.onended = null;
+      s.stop();
+    } catch (e) {}
+  }
+  playSources.clear();
+  pausedChunks.length = 0;
+  playPaused = false;
+  playCursor = 0;
+  scheduledMs = 0;
+}
+
+function teardownPlayback() {
+  flushPlayback();
+  if (aiGain) {
+    aiGain.disconnect();
+    aiGain = null;
+  }
+  aiDest = null;
+  aiAudioEl.srcObject = null;
+}
+
+// ---- 音量可视化：电脑没有扬声器，只能靠看 ----
+let rafId = null;
+const meters = []; // { node, analyser, sink, buf, fillEl, dotEl }
+
+function attachMeter(node, fillId, dotId) {
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  analyser.smoothingTimeConstant = 0.6;
+  node.connect(analyser);
+
+  // 再挂一个零增益的出口到 destination，保证这条音频图被持续驱动。
+  // 只连 analyser 不接出口的话这段图不会被拉动，analyser 永远只读到静音基线
+  // —— 音量条一动不动，通话本身却是好的，非常容易误判。
+  const sink = audioCtx.createGain();
+  sink.gain.value = 0;
+  analyser.connect(sink);
+  sink.connect(audioCtx.destination);
+
+  meters.push({
+    node,
+    analyser,
+    sink,
+    buf: new Uint8Array(analyser.fftSize),
+    fillEl: document.getElementById(fillId),
+    dotEl: document.getElementById(dotId),
+  });
+  if (rafId === null) tickMeters();
+}
+
+function tickMeters() {
+  for (const m of meters) {
+    m.analyser.getByteTimeDomainData(m.buf);
+    // 计算 RMS 音量（buf 是 0..255，128 为静音基线）
+    let sum = 0;
+    for (let i = 0; i < m.buf.length; i++) {
+      const v = (m.buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / m.buf.length);
+    // 放大并开方，让小声音也看得见
+    const pct = Math.min(100, Math.sqrt(rms) * 180);
+    m.fillEl.style.width = pct.toFixed(1) + "%";
+    m.dotEl.classList.toggle("on", pct > 8);
+  }
+  rafId = requestAnimationFrame(tickMeters);
+}
+
+function stopMeters() {
+  if (rafId !== null) cancelAnimationFrame(rafId);
+  rafId = null;
+  for (const m of meters) {
+    try {
+      m.node.disconnect(m.analyser);
+    } catch (e) {}
+    m.analyser.disconnect();
+    m.sink.disconnect();
+  }
+  meters.length = 0;
+  ["remoteFill", "aiFill"].forEach((id) => (document.getElementById(id).style.width = "0%"));
+  ["remoteDot", "aiDot"].forEach((id) => document.getElementById(id).classList.remove("on"));
+}
+
+// ================= 音色选择 =================
+// 火山的音色列表在 public/voices.json（从控制台导出后整理的）。
+// 选中的音色不走 .env，而是在建连时挂在 WebSocket 的 query 上传给服务端——
+// 因为 CallSession 在连接建立那一刻就要拿着音色把 TTS 会话开出去，
+// 连上以后再发消息就晚了，第一句已经用默认音色念出去了。
+const voiceSelect = document.getElementById("voiceSelect");
+const voiceFilter = document.getElementById("voiceFilter");
+const voiceDemoBtn = document.getElementById("voiceDemoBtn");
+const voiceHint = document.getElementById("voiceHint");
+const VOICE_KEY = "realtime-demo.speaker";
+
+let allVoices = [];
+let demoAudioEl = null;
+
+// 分组顺序。第一档是按名字和场景标签挑出来置顶的，方便试，
+// 不是官方推荐——真要定下来还得自己挨个听。
+// 置顶只影响分组，不动音色自己的 scene 标签：所以搜"客服"照样能搜到
+// 被置顶的那两个客服音色，不会因为进了推荐档就搜不着
+const PICK_GROUP = "电话场景常用";
+const SCENE_ORDER = [
+  PICK_GROUP,
+  "通用场景",
+  "客服场景",
+  "多情感",
+  "角色扮演",
+  "有声阅读",
+  "视频配音",
+  "教育场景",
+  "英文",
+];
+
+function renderVoices(keyword) {
+  const kw = (keyword || "").trim();
+  const cur = voiceSelect.value;
+  voiceSelect.innerHTML = "";
+
+  const hit = (v) =>
+    !kw ||
+    v.name.includes(kw) ||
+    v.scene.includes(kw) ||
+    v.sex === kw ||
+    v.code.includes(kw.toLowerCase());
+
+  let count = 0;
+  for (const scene of SCENE_ORDER) {
+    const list = allVoices.filter(
+      (v) => (scene === PICK_GROUP ? v.pick : !v.pick && v.scene === scene) && hit(v),
+    );
+    if (!list.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = `${scene}（${list.length}）`;
+    for (const v of list) {
+      const opt = document.createElement("option");
+      opt.value = v.code;
+      opt.textContent = `${v.name}${v.sex ? " · " + v.sex : ""}`;
+      group.appendChild(opt);
+      count++;
+    }
+    voiceSelect.appendChild(group);
+  }
+
+  if (!count) {
+    const opt = document.createElement("option");
+    opt.textContent = "（没有匹配的音色）";
+    opt.disabled = true;
+    voiceSelect.appendChild(opt);
+    voiceHint.textContent = "";
+    return;
+  }
+  // 筛选后尽量保住原来的选择，保不住就退到第一个
+  if (cur && allVoices.some((v) => v.code === cur) && hit(allVoices.find((v) => v.code === cur))) {
+    voiceSelect.value = cur;
+  }
+  updateVoiceHint();
+}
+
+function currentVoice() {
+  return allVoices.find((v) => v.code === voiceSelect.value) || null;
+}
+
+// 日志里显示"渊博小叔 2.0"比一长串 code 好认。
+// 服务端可能用的是 .env 里的默认音色（列表里没有），那就原样显示 code
+function voiceName(code) {
+  const v = allVoices.find((x) => x.code === code);
+  return v ? `${v.name} / ${code}` : code;
+}
+
+function updateVoiceHint() {
+  const v = currentVoice();
+  voiceHint.textContent = v ? v.code : "";
+  if (v) localStorage.setItem(VOICE_KEY, v.code);
+}
+
+async function loadVoices() {
+  try {
+    const res = await fetch("voices.json");
+    allVoices = await res.json();
+  } catch (e) {
+    log("⚠️ 音色列表加载失败: " + e.message + "（会用服务端 .env 里的默认音色）");
+    voiceSelect.disabled = true;
+    voiceDemoBtn.disabled = true;
+    return;
+  }
+  renderVoices("");
+  const saved = localStorage.getItem(VOICE_KEY);
+  if (saved && allVoices.some((v) => v.code === saved)) {
+    voiceSelect.value = saved;
+    updateVoiceHint();
+  }
+  dbg(`🎤 已载入 ${allVoices.length} 个音色`);
+}
+
+voiceFilter.addEventListener("input", () => renderVoices(voiceFilter.value));
+voiceSelect.addEventListener("change", updateVoiceHint);
+
+// 试听走的是官方给的示例音频，不消耗你的合成额度。
+// 输出设备跟测试音一样按上面选的走，所以接了 CABLE 的话对方也能听到
+voiceDemoBtn.addEventListener("click", async () => {
+  const v = currentVoice();
+  if (!v) return;
+
+  if (!demoAudioEl) {
+    demoAudioEl = new Audio();
+    demoAudioEl.addEventListener("ended", () => (voiceDemoBtn.textContent = "▶ 试听"));
+  }
+  if (!demoAudioEl.paused) {
+    demoAudioEl.pause();
+    voiceDemoBtn.textContent = "▶ 试听";
+    return;
+  }
+
+  demoAudioEl.src = v.demo;
+  const outId = outputSelect.value;
+  if (outId && typeof demoAudioEl.setSinkId === "function") {
+    try {
+      await demoAudioEl.setSinkId(outId);
+    } catch (e) {
+      log("⚠️ 试听设置输出设备失败: " + e.message);
+    }
+  }
+  try {
+    await demoAudioEl.play();
+    voiceDemoBtn.textContent = "⏹ 停止";
+    log(`🎧 试听「${v.name}」`, "msg-sys");
+  } catch (e) {
+    // 示例音频在火山的 CDN 上，公司网络挡外链或链接过期都会走到这里。
+    // 试听失败不影响真正的合成——那条走的是 WebSocket，跟 CDN 无关
+    log(`❌ 试听失败: ${e.message}（不影响通话，直接开始通话听真声就行）`);
+    voiceDemoBtn.textContent = "▶ 试听";
+  }
+});
+
+// ---- 自定义（复刻）音色 ----
+// 复刻音色跟官方精品音色走的是两个资源号：官方精品是 seed-tts-2.0，
+// 复刻必须用 seed-icl-2.0，且要在控制台单独开通「豆包声音复刻模型2.0」。
+// 没开通的话握手直接 403，页面上会把这条提示打出来。
+const useCustomVoice = document.getElementById("useCustomVoice");
+const customVoiceRow = document.getElementById("customVoiceRow");
+const customVoiceId = document.getElementById("customVoiceId");
+const customVoiceHint = document.getElementById("customVoiceHint");
+const CUSTOM_KEY = "realtime-demo.customSpeaker";
+const CUSTOM_ON_KEY = "realtime-demo.customSpeakerOn";
+
+function syncCustomVoice() {
+  const on = useCustomVoice.checked;
+  customVoiceRow.style.display = on ? "flex" : "none";
+  voiceSelect.disabled = on || running;
+  voiceFilter.disabled = on || running;
+  voiceDemoBtn.disabled = on;
+  customVoiceHint.textContent = on
+    ? "会用 seed-icl-2.0 资源号。没开通「豆包声音复刻模型2.0」的话连接会报 403"
+    : "";
+  localStorage.setItem(CUSTOM_ON_KEY, on ? "1" : "");
+  localStorage.setItem(CUSTOM_KEY, customVoiceId.value.trim());
+}
+
+useCustomVoice.addEventListener("change", syncCustomVoice);
+customVoiceId.addEventListener("input", syncCustomVoice);
+
+// 页面重开时把上次填的恢复回来
+customVoiceId.value = localStorage.getItem(CUSTOM_KEY) || "";
+useCustomVoice.checked = !!localStorage.getItem(CUSTOM_ON_KEY);
+syncCustomVoice();
+
+// 最终用哪个音色 + 哪个资源号，只在这一处决定
+function chosenVoice() {
+  if (useCustomVoice.checked) {
+    const id = customVoiceId.value.trim();
+    return id ? { speaker: id, resource: "seed-icl-2.0" } : null;
+  }
+  return voiceSelect && voiceSelect.value
+    ? { speaker: voiceSelect.value, resource: "seed-tts-2.0" }
+    : null;
+}
+
+loadVoices();
+
+
+async function listDevices() {
+  // 需要先请求一次权限，才能拿到设备的 label
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tmp.getTracks().forEach((t) => t.stop());
+  } catch (e) {
+    log("⚠️ 无法获取麦克风权限：" + e.message);
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  outputSelect.innerHTML = "";
+  inputSelect.innerHTML = "";
+
+  devices.forEach((d) => {
+    if (d.kind === "audiooutput") {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || "扬声器设备";
+      outputSelect.appendChild(opt);
+    }
+    if (d.kind === "audioinput") {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || "麦克风设备";
+      inputSelect.appendChild(opt);
+    }
+  });
+}
+
+// 本地中转口。页面是 http 就用 ws，将来套了 https 会自动跟着变 wss。
+// 音色挂在 query 上：服务端在连接建立的那一刻就要拿它去开 TTS 会话
+function relayUrl() {
+  const base = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  const v = chosenVoice();
+  if (!v) return base;
+  return `${base}?speaker=${encodeURIComponent(v.speaker)}&resource=${encodeURIComponent(v.resource)}`;
+}
+
+async function start() {
+  startBtn.disabled = true;
+  callStartedAt = Date.now();
+  sentBytes = 0;
+  recvAudioBytes = 0;
+  underruns = 0;
+  turns = 0;
+  barges = 0;
+  ttfas.length = 0;
+  thinkAt = 0;
+
+  // 通话连不上时，最难判断的是"卡在哪一步"。把每步耗时记下来，
+  // 出问题时连同已完成的步骤一起打出来，不用再猜是设备、是本地中转还是上游。
+  const steps = [];
+  let stepAt = performance.now();
+  const step = (name) => {
+    steps.push(`${name} ${(performance.now() - stepAt).toFixed(0)}ms`);
+    stepAt = performance.now();
+  };
+
+  try {
+    setStatus("正在准备音频设备...");
+    await ensureAudioCtx();
+    setupPlayback();
+    step("音频上下文");
+
+    // 输出路由要在开始收音频之前搞定，不然开场白会跑到默认扬声器上
+    const outId = outputSelect.value;
+    if (outId && typeof aiAudioEl.setSinkId === "function") {
+      try {
+        await aiAudioEl.setSinkId(outId);
+        log("🔊 AI 声音已路由到: " + outputSelect.selectedOptions[0].textContent);
+      } catch (e) {
+        log("⚠️ 设置输出设备失败: " + e.message);
+      }
+    }
+    // autoplay 可能被浏览器的自动播放策略拦下，而且是静默失败：
+    // 元素不播放 = 没有音频进声卡 = 对方什么都听不到
+    try {
+      await aiAudioEl.play();
+      dbg("▶️ AI 音频元素已开始播放");
+    } catch (e) {
+      log("❌ AI 音频播放被拦截: " + e.message + "（点一下页面再试）");
+    }
+
+    step("输出路由");
+
+    await startCapture();
+    step("麦克风采集");
+
+    // 通话中换音色没有意义：TTS 会话已经按当前音色开出去了，
+    // 中途改只会让下一轮突然换个人说话。锁住，挂断后再改
+    voiceSelect.disabled = true;
+    voiceFilter.disabled = true;
+    useCustomVoice.disabled = true;
+    customVoiceId.disabled = true;
+
+    setStatus("正在连接本地中转...");
+    await connectRelay();
+    step("接入火山 / OpenAI");
+    dbg("⏱️ 启动各步耗时: " + steps.join(" | "));
+  } catch (e) {
+    log("❌ 启动失败: " + e.message);
+    // 把走到哪一步、各花了多久一起打出来，这是判断卡点的关键线索
+    log("   已完成: " + (steps.length ? steps.join(" | ") : "（一步都没走完）"), "msg-sys");
+    setStatus("启动失败：" + e.message);
+    stop();
+  }
+}
+
+let relayStartedAt = 0;
+
+function connectRelay() {
+  return new Promise((resolve, reject) => {
+    relayStartedAt = performance.now();
+    ws = new WebSocket(relayUrl());
+    let settled = false;
+
+    ws.addEventListener("open", () => {
+      // 到这里只是连上了本机服务。上游还有三条连接要建（火山 ASR、火山 TTS、
+      // 以及第一次用到时才发起的 OpenAI），全部就绪服务端才会发 ready
+      setStatus("本地中转已连接，正在接入语音服务...");
+    });
+
+    ws.addEventListener("message", (e) => {
+      let evt;
+      try {
+        evt = JSON.parse(e.data);
+      } catch (err) {
+        console.log("无法解析事件", e.data);
+        return;
+      }
+      if (!settled && evt.type === "ready") {
+        settled = true;
+        resolve();
+      }
+      handleEvent(evt);
+    });
+
+    ws.addEventListener("error", () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("连不上本地中转，确认 npm start 还在跑"));
+    });
+
+    ws.addEventListener("close", () => {
+      if (!settled) {
+        settled = true;
+        // 服务端连不上 OpenAI 时会先发一条 error 事件再关，具体原因已经打在日志里了
+        reject(new Error("中转连接被关闭，看上面那条错误"));
+        return;
+      }
+      if (running) {
+        log("🔌 连接已断开", "msg-sys");
+        stop();
+      }
+    });
+  });
+}
+
+// ---- 链路诊断 ----
+// 没有 WebRTC 的 getStats 了，但走 WS 反而更直白：
+// 上行看发了多少字节，下行看收到多少音频、播放队列还剩多少余量、欠载过几次。
+// TCP 不会丢包（丢了会重传），所以这条路上唯一会伤听感的就是"音频供不上播放"。
+let statsTimer = null;
+let lastSent = 0;
+let lastRecv = 0;
+
+function pollStats() {
+  const dSent = sentBytes - lastSent;
+  const dRecv = recvAudioBytes - lastRecv;
+  lastSent = sentBytes;
+  lastRecv = recvAudioBytes;
+  const queuedMs = audioCtx ? Math.max(0, (playCursor - audioCtx.currentTime) * 1000) : 0;
+  // 24000Hz × 2 字节 = 48000 字节/秒，拿它把字节数换算成"这几秒收到几秒音频"
+  const recvSec = dRecv / (SAMPLE_RATE * 2);
+  dbg(
+    `📶 上行${(dSent / 1024 / 3).toFixed(1)}KB/s | 下行音频${recvSec.toFixed(1)}s/3s | ` +
+      `播放余量${queuedMs.toFixed(0)}ms | 欠载${underruns}次`
+  );
+}
+
+function startStatsProbe() {
+  stopStatsProbe();
+  lastSent = sentBytes;
+  lastRecv = recvAudioBytes;
+  statsTimer = setInterval(pollStats, 3000);
+}
+
+function stopStatsProbe() {
+  if (statsTimer !== null) clearInterval(statsTimer);
+  statsTimer = null;
+}
+
+function sendEvent(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// 边说边显示的那一行（说完就定稿）
+let liveEl = null;
+function liveLine(text, cls) {
+  if (!liveEl) {
+    liveEl = document.createElement("div");
+    liveEl.className = cls + " live";
+    logEl.appendChild(liveEl);
+  }
+  liveEl.textContent = text;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function finishLine() {
+  liveEl = null;
+}
+
+let remoteText = "";
+let aiText = "";
+
+// 服务端事件的处理。跟 realtime 时代最大的不同：
+// 这里不再有任何判断逻辑，纯粹是"服务端说什么就做什么"。
+// 轮次、打断、上下文全在服务端，浏览器只负责放音和汇报。
+function handleEvent(evt) {
+  switch (evt.type) {
+    // ---- 链路 ----
+    case "ready":
+      running = true;
+      stopBtn.disabled = false;
+      log(
+        `✅ 链路已打通：火山ASR → ${evt.model} → 火山TTS(${voiceName(evt.speaker)}` +
+          `${evt.ttsResource === "seed-icl-2.0" ? "，复刻音色" : ""})` +
+          (evt.proxy ? `，LLM 经代理 ${evt.proxy}` : "，LLM 直连") +
+          (relayStartedAt ? `，耗时 ${(performance.now() - relayStartedAt).toFixed(0)}ms` : ""),
+        "msg-sys"
+      );
+      setStatus("已连接，等待对方说话 🎧");
+      startStatsProbe();
+      break;
+
+    // ---- 状态机。这四个状态是服务端 VAD + 编排器算出来的 ----
+    case "state":
+      if (evt.state === "LISTENING") {
+        setStatus("🔵 对方正在说话...");
+        remoteText = "";
+      } else if (evt.state === "THINKING") {
+        setStatus("对方说完了，AI 正在思考...");
+        aiText = "";
+        thinkAt = performance.now();
+      } else if (evt.state === "SPEAKING") {
+        setStatus("🟢 AI 正在说话...");
+        if (thinkAt) {
+          dbg(`⏱️ 首字延迟 ${(performance.now() - thinkAt).toFixed(0)}ms`);
+          ttfas.push(performance.now() - thinkAt);
+          thinkAt = 0;
+        }
+      } else {
+        setStatus("等待对方说话 🎧");
+      }
+      break;
+
+    // ---- 客户说的话（边说边出字）----
+    case "stt.partial":
+      remoteText = evt.text;
+      if (remoteText) liveLine("🧑 对方: " + remoteText, "msg-user");
+      break;
+    case "stt.final":
+      liveLine("🧑 对方: " + evt.text, "msg-user");
+      if (liveEl) liveEl.classList.remove("live");
+      finishLine();
+      turns++;
+      break;
+
+    // ---- AI 说的话。文字先到，音频随后，所以文字总是跑在声音前面 ----
+    case "llm.delta":
+      aiText += evt.text;
+      liveLine("🤖 AI: " + aiText, "msg-ai");
+      break;
+    case "llm.done":
+      liveLine("🤖 AI: " + evt.text, "msg-ai");
+      if (liveEl) liveEl.classList.remove("live");
+      finishLine();
+      break;
+
+    // ---- 音频 ----
+    case "tts.audio":
+      pushPcm(b64ToBytes(evt.audio));
+      break;
+
+    // ---- 打断三部曲。服务端决定，这边只执行 ----
+    case "playback.pause":
+      pausePlayback();
+      break;
+    case "playback.resume":
+      resumePlayback();
+      break;
+    case "playback.flush":
+      flushPlayback();
+      finishLine();
+      barges++;
+      break;
+
+    case "log":
+      log(evt.text, "msg-sys");
+      break;
+    case "error":
+      log("❌ 错误: " + evt.message, "msg-sys");
+      break;
+  }
+}
+
+
+// ---- 通话小结 ----
+// realtime 时代服务端每轮会回一个 usage 对象，token 数是白给的。
+// 级联之后没有这个东西了：三家各算各的账，页面这边只能统计自己看得见的部分。
+// 反正调参时真正要盯的也不是 token，而是首字延迟和打断准不准。
+let callStartedAt = 0;
+
+function reportStats() {
+  const mins = (Date.now() - callStartedAt) / 60000;
+  log("──────── 本次通话 ────────", "msg-sys");
+  log(`⏱️ 时长 ${mins.toFixed(1)} 分钟，客户说了 ${turns} 轮，打断 ${barges} 次`, "msg-sys");
+  if (ttfas.length) {
+    const avg = ttfas.reduce((a, b) => a + b, 0) / ttfas.length;
+    log(
+      `🚀 首字延迟 平均${avg.toFixed(0)}ms / 最快${Math.min(...ttfas).toFixed(0)}ms` +
+        `　（客户说完到 AI 出声。<1200 好 / >2000 电话里会觉得冷场）`,
+      "msg-sys"
+    );
+    if (avg > 2000) {
+      log("   偏慢的话优先查这两处：LLM 那一跳的代理是不是绕远了；分句器的 firstMin 能不能再调小", "msg-sys");
+    }
+  }
+  const recvSec = recvAudioBytes / (SAMPLE_RATE * 2);
+  log(`🔊 收到 AI 音频 ${recvSec.toFixed(1)} 秒`, "msg-sys");
+  if (underruns > 0) {
+    log(`   ⚠️ 播放欠载 ${underruns} 次（AI 话说到一半没音频了，听感卡顿），把 PLAY_LEAD_MS 调大试试`, "msg-sys");
+  }
+}
+
+function stop() {
+  const wasRunning = running;
+  running = false;
+  stopStatsProbe();
+  finishLine();
+  if (recNode) {
+    finishRecording();
+    recBtn.textContent = "⏺️ 录制 AI 语音";
+  }
+  if (wasRunning) reportStats();
+
+  if (ws) {
+    // 注意：这里不能用 ws.onclose = null 来"摘掉"回调——那个监听是 addEventListener
+    // 挂的，赋值 onclose 根本摘不掉。靠上面先置 running = false 来避免绕回 stop()。
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+    ws = null;
+  }
+  stopCapture();
+  teardownPlayback();
+  stopMeters();
+  if (audioCtx) {
+    audioCtx.close();
+    audioCtx = null;
+  }
+
+  useCustomVoice.disabled = false;
+  customVoiceId.disabled = false;
+  syncCustomVoice(); // 由它决定下拉框到底该不该恢复可用
+
+  setStatus("已断开");
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+}
+
+// ---- 输出通路自测 ----
+// 走的路径跟 AI 音频完全一样：<audio> 元素 + setSinkId 到选中的输出设备。
+// 这样能把「输出通不通」和 WebSocket / OpenAI 完全隔离开单独验证。
+// Float32 采样 -> 16bit 单声道 WAV。测试音和录音共用
+function encodeWav(samples, sampleRate) {
+  const n = samples.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const ascii = (off, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // 单声道
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  ascii(36, "data");
+  v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 32767, true);
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+function makeTestWav(seconds, sampleRate) {
+  const n = Math.floor(seconds * sampleRate);
+  const s = new Float32Array(n);
+  // 2Hz 颤音的双音警笛声：比纯音更难被 LINE 的降噪整段抹掉，也绝不会跟人声混淆
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate;
+    const freq = 500 + 300 * Math.sin(2 * Math.PI * 2 * t);
+    s[i] = 0.7 * Math.sin(2 * Math.PI * freq * t);
+  }
+  return encodeWav(s, sampleRate);
+}
+
+// ---- 录制 AI 原始语音 ----
+// 直接从播放链路的汇聚点录，位置在进声卡之前，所以录到的是 AI 音频的"出厂状态"。
+// 拿它跟对方实际听到的对比，就能分清是模型本身如此，还是 LINE 传输损耗。
+let recNode = null;
+let recSrc = null;
+let recChunks = [];
+
+function startRecording() {
+  if (!audioCtx || !aiGain) throw new Error("还没有 AI 音频，请先建立通话");
+  recChunks = [];
+  recSrc = aiGain;
+  recNode = audioCtx.createScriptProcessor(4096, 1, 1);
+  recNode.onaudioprocess = (e) => {
+    recChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  // ScriptProcessor 必须连到 destination 才会被驱动。串一个零增益避免真的出声。
+  const mute = audioCtx.createGain();
+  mute.gain.value = 0;
+  recSrc.connect(recNode);
+  recNode.connect(mute);
+  mute.connect(audioCtx.destination);
+  recNode._mute = mute;
+}
+
+function finishRecording() {
+  if (!recNode) return null;
+  recNode.onaudioprocess = null;
+  try {
+    recSrc.disconnect(recNode);
+  } catch (e) {}
+  recNode.disconnect();
+  recNode._mute.disconnect();
+  // audioCtx 可能马上就要被 stop() 关掉，采样率先取出来
+  const rate = audioCtx ? audioCtx.sampleRate : SAMPLE_RATE;
+  recNode = null;
+  recSrc = null;
+
+  const total = recChunks.reduce((a, c) => a + c.length, 0);
+  if (total === 0) return null;
+  const all = new Float32Array(total);
+  let off = 0;
+  for (const c of recChunks) {
+    all.set(c, off);
+    off += c.length;
+  }
+  recChunks = [];
+  return { blob: encodeWav(all, rate), seconds: total / rate };
+}
+
+const recBtn = document.getElementById("recBtn");
+recBtn.addEventListener("click", () => {
+  if (recNode) {
+    const out = finishRecording();
+    recBtn.textContent = "⏺️ 录制 AI 语音";
+    if (!out) {
+      log("⚠️ 没录到任何音频，AI 期间可能一直没出声");
+      return;
+    }
+    const url = URL.createObjectURL(out.blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ai-voice-${new Date().toISOString().replace(/[:.]/g, "-")}.wav`;
+    a.textContent = `💾 点这里下载录音（${out.seconds.toFixed(1)} 秒，无损 WAV）`;
+    a.style.color = "#60a5fa";
+    logEl.appendChild(a);
+    logEl.appendChild(document.createElement("br"));
+    logEl.scrollTop = logEl.scrollHeight;
+    return;
+  }
+  try {
+    startRecording();
+    recBtn.textContent = "⏹️ 停止并保存";
+    log("⏺️ 正在录制 AI 原始语音（声卡之前）", "msg-sys");
+  } catch (e) {
+    log("❌ 录制失败: " + e.message);
+  }
+});
+
+const testBtn = document.getElementById("testBtn");
+const testAudioEl = document.getElementById("testAudio");
+let testUrl = null;
+
+testBtn.addEventListener("click", async () => {
+  if (!testAudioEl.paused) {
+    testAudioEl.pause();
+    testBtn.textContent = "🔊 测试输出";
+    log("⏹️ 测试音已停止", "msg-sys");
+    return;
+  }
+
+  if (!testUrl) testUrl = URL.createObjectURL(makeTestWav(3, 48000));
+  testAudioEl.src = testUrl;
+  testAudioEl.volume = 1;
+
+  const outId = outputSelect.value;
+  if (outId && typeof testAudioEl.setSinkId === "function") {
+    try {
+      await testAudioEl.setSinkId(outId);
+      log("🔊 测试音输出到: " + outputSelect.selectedOptions[0].textContent, "msg-sys");
+    } catch (e) {
+      log("⚠️ 测试音设置输出设备失败: " + e.message);
+      return;
+    }
+  }
+
+  try {
+    await testAudioEl.play();
+    testBtn.textContent = "⏹️ 停止测试";
+    log("▶️ 测试音循环播放中，问对方听不听得到", "msg-sys");
+  } catch (e) {
+    log("❌ 测试音播放被拦截: " + e.message);
+  }
+});
+
+// ---- 一键线路测试 ----
+// 不打 LINE、不用对方配合、不碰声卡：单独开一条中转连接，让 AI 自说自话若干秒，
+// 只看音频能不能稳定流回来，测完自动断开。
+// 级联架构下要盯的是这三件事（丢包不用管，三跳都是 TCP，丢了会重传）：
+//   1. 首字延迟 = 触发 → 第一个音频包。这里面套着 LLM 首 token + TTS 首包两段
+//   2. 一轮话说到一半会不会断流（LLM 吐字跟不上 TTS 念，或者代理抽风）
+//   3. 音频到达是不是至少跟得上实时播放
+// 全部按"轮"统计：跨轮的空档是模型在思考，不是线路卡，不能算进断流里。
+const NET_TEST_SECONDS = 15;
+const netBtn = document.getElementById("netBtn");
+
+function runNetTest() {
+  if (running) return Promise.reject(new Error("请先结束当前通话再测线路"));
+
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const probe = new WebSocket(relayUrl());
+    let readyMs = 0;
+    let timer = null;
+    let countdown = NET_TEST_SECONDS;
+    let done = false;
+
+    let askedAt = 0;      // 本轮触发的时刻
+    let firstAt = 0;      // 本轮第一个音频包的到达时刻
+    let lastAt = 0;       // 本轮上一个音频包的到达时刻
+    const ttfa = [];      // 每轮的首字延迟
+    let maxGapMs = 0;     // 轮内最大断流
+    let audioBytes = 0;
+    let streamMs = 0;     // 轮内真正在流音频的总时长
+
+    // 本轮收尾：把这一轮流了多久累加起来。跨轮的思考时间就这样被排除在外
+    const closeRound = () => {
+      if (firstAt && lastAt > firstAt) streamMs += lastAt - firstAt;
+      firstAt = 0;
+      lastAt = 0;
+    };
+
+    const ask = () => {
+      closeRound();
+      askedAt = performance.now();
+      probe.send(JSON.stringify({ type: "probe" }));
+    };
+
+    const finish = (err) => {
+      if (done) return;
+      done = true;
+      if (timer) clearInterval(timer);
+      closeRound();
+      try {
+        probe.close();
+      } catch (e) {}
+      if (err) return reject(err);
+      if (!audioBytes || !streamMs) return reject(new Error("没收到足够的音频，去看服务端日志"));
+      const seconds = audioBytes / (SAMPLE_RATE * 2);
+      resolve({
+        readyMs,
+        rounds: ttfa.length,
+        avgTtfa: ttfa.reduce((a, b) => a + b, 0) / ttfa.length,
+        minTtfa: Math.min(...ttfa),
+        maxGapMs,
+        // 收到的音频时长 ÷ 它实际流了多久。>100% 说明比实时快，缓冲会越垫越厚，是好事；
+        // <100% 说明音频供不上播放，队列迟早见底，听感就是卡顿
+        supply: seconds / (streamMs / 1000),
+        seconds,
+      });
+    };
+
+    probe.addEventListener("message", (e) => {
+      let evt;
+      try {
+        evt = JSON.parse(e.data);
+      } catch (err) {
+        return;
+      }
+      if (evt.type === "ready") {
+        readyMs = performance.now() - t0;
+        timer = setInterval(() => {
+          netBtn.textContent = `📶 测试中 ${--countdown}s`;
+          if (countdown <= 0) finish();
+        }, 1000);
+        ask();
+      }
+      // 这一轮说完了（服务端把状态落回 IDLE），马上让它再说一轮，
+      // 保证整个测试窗口里一直有音频在传
+      if (evt.type === "state" && evt.state === "IDLE" && readyMs) ask();
+      if (evt.type === "tts.audio") {
+        const now = performance.now();
+        if (!firstAt) {
+          firstAt = now;
+          ttfa.push(now - askedAt);
+        } else {
+          maxGapMs = Math.max(maxGapMs, now - lastAt);
+        }
+        lastAt = now;
+        // base64 每 4 个字符对应 3 字节，估个大概就够用了
+        audioBytes += Math.floor((evt.audio.length * 3) / 4);
+      }
+      if (evt.type === "error") finish(new Error(evt.message || "服务端报错"));
+    });
+
+    probe.addEventListener("error", () => finish(new Error("连不上本地中转，确认 npm start 还在跑")));
+    probe.addEventListener("close", () => finish());
+  });
+}
+
+netBtn.addEventListener("click", async () => {
+  netBtn.disabled = true;
+  log("📶 开始测线路，约 " + NET_TEST_SECONDS + " 秒，期间不要动其它按钮…", "msg-sys");
+  try {
+    const r = await runNetTest();
+    // 接话延迟拿最快的一轮看：第一轮还带着会话预热，不能代表通话中的水平
+    const bad = r.minTtfa > 3000 || r.maxGapMs > 1500 || r.supply < 0.9;
+    const mid = r.minTtfa > 1500 || r.maxGapMs > 800 || r.supply < 1;
+    const verdict = bad ? "❌ 不可用" : mid ? "⚠️ 勉强能用" : "✅ 良好";
+    log("──────── 线路测试结果 ────────", "msg-sys");
+    log(`${verdict}（${r.rounds} 轮，共收到音频 ${r.seconds.toFixed(1)} 秒）`, "msg-sys");
+    log(
+      `   接话延迟 最快${r.minTtfa.toFixed(0)}ms / 平均${r.avgTtfa.toFixed(0)}ms` +
+        `　（看最快那个，<1500 好 / >3000 电话里会觉得冷场）`,
+      "msg-sys"
+    );
+    log(`   轮内断流 ${r.maxGapMs.toFixed(0)}ms　（<800 好 / >1500 会听出卡顿）`, "msg-sys");
+    log(
+      `   供给率 ${(r.supply * 100).toFixed(0)}%　（音频到达速度 ÷ 实时。>100% 是好事，` +
+        `说明比实时快、缓冲越垫越厚；<100% 才会卡）`,
+      "msg-sys"
+    );
+    log(`   接入 OpenAI 耗时 ${r.readyMs.toFixed(0)}ms　（只在建连时付一次，不影响通话中）`, "msg-sys");
+  } catch (e) {
+    log("❌ 线路测试失败: " + e.message);
+  } finally {
+    netBtn.disabled = false;
+    netBtn.textContent = "📶 测线路";
+  }
+});
+
+startBtn.addEventListener("click", start);
+stopBtn.addEventListener("click", stop);
+
+listDevices();
+navigator.mediaDevices.addEventListener("devicechange", listDevices);
+</script>
+</body>
+</html>
