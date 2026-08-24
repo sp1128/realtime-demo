@@ -13,7 +13,7 @@
 本地 Node 服务
    ├─ VAD          谁在说话 / 什么时候接话 / 要不要打断
    ├─ 火山流式 ASR  听懂说了什么（降到 16kHz 再送）
-   ├─ OpenAI LLM   流式生成回复
+   ├─ DeepSeek LLM 流式生成回复
    ├─ 分句切分器    边生成边切句
    └─ 火山流式 TTS  一句一句合成
    ↓
@@ -31,10 +31,10 @@
 
 代价是首字延迟从 ~0.6s 涨到 ~1.0~1.5s。电话销售场景这个交换是划算的。
 
-### 为什么 STT/TTS 用国内厂商，只有 LLM 走代理
+### 为什么三段都走国内直连
 
-三跳里每跳走代理都要白搭 200~400ms。实测本机到火山直连 **22ms**，到 OpenAI 走代理
-要一两秒握手。语音那两跳数据量大、来回频繁，绕出境的话首字要 2 秒以上，电话里没法听。
+三跳里每跳走代理都要白搭 200~400ms。实测本机到火山直连 **22ms**，DeepSeek 同样是国内接口，
+不该绕出境。语音那两跳数据量大、来回频繁，绕出境的话首字要 2 秒以上，电话里没法听。
 
 LLM 那一跳只付一次首 token 延迟，而且能被 TTS 的播放时间盖掉一部分——
 第一句一出来就开始播，后面的 token 是在客户听第一句时悄悄生成的。
@@ -48,7 +48,7 @@ LLM 那一跳只付一次首 token 延迟，而且能被 TTS 的播放时间盖�
    左侧「API服务中心」里开通这两项，拿到一对 AppID / AccessToken（两个服务共用）：
    - 豆包流式语音识别模型 2.0
    - 豆包语音合成模型 2.0
-3. **OpenAI API Key**：https://platform.openai.com/api-keys
+3. **DeepSeek API Key**：https://platform.deepseek.com/api_keys
 4. （可选，接入 LINE 才需要）VB-Audio Virtual Cable
 
 两个服务必须开在**同一个应用**下，否则 AppID 对不上，其中一路必然 401。
@@ -130,7 +130,7 @@ cp .env.example .env
 ```
 VOLC_APP_ID=你的AppID
 VOLC_ACCESS_TOKEN=你的AccessToken
-OPENAI_API_KEY=sk-你的密钥
+DEEPSEEK_API_KEY=sk-你的DeepSeek密钥
 ```
 
 **资源号要跟你实际开通的套餐对上**，填错会在 WebSocket 握手阶段就被拒（401/403）。
@@ -145,11 +145,26 @@ npm start
 启动日志会把当前链路和关键旋钮打出来，省得改完 `.env` 还要猜有没有生效：
 
 ```
-链路 火山ASR(volc.seedasr.sauc.duration) → gpt-4o-mini → 火山TTS(seed-tts-2.0 / zh_female_vv_uranus_bigtts)
+链路 火山ASR(volc.seedasr.sauc.duration) → deepseek-chat → 火山TTS(seed-tts-2.0 / zh_female_vv_uranus_bigtts)
 轮次 静音500ms提交（阈值3倍底噪）｜打断 确认式，1000ms内听到2字算数
 ```
 
 然后用 Chrome 打开 http://localhost:3000
+
+### 用手机体验（和电脑同一 WiFi）
+
+浏览器只给 **https** 或 **localhost** 麦克风权限，所以服务会额外开一个自签 HTTPS。启动后看日志里的地址，例如：
+
+```
+https://192.168.0.101:3443
+```
+
+1. 手机浏览器打开这个地址（不要用 `http://`）。
+2. 证书是本机自签的，页面会报警：Chrome 点「高级」→「继续前往」；Safari 点「显示详细内容」→「访问此网站」。
+3. 点「开始通话」时允许麦克风。输入选手机麦克风，输出用默认听筒/扬声器。
+4. 打不开时：关掉路由器的「AP 隔离 / 访客网络」；Windows 防火墙放行 Node.js，或放行 TCP `3443`。
+
+电脑自己测仍然用 `http://localhost:3000`，不用走 HTTPS。端口可用 `.env` 里的 `HTTPS_PORT` 改。
 
 ## 四、页面怎么用
 
@@ -187,10 +202,10 @@ TLS 握手才暴露。所以脚本一定要走完 TLS。
 
 | 症状 | 原因 |
 |---|---|
-| 页面报 401 | 火山的 AppID/Token 不对，或 OpenAI Key 不对 |
+| 页面报 401 | 火山的 AppID/Token 不对，或 DeepSeek Key 不对 |
 | 页面报 403 | 火山资源号跟实际开通的套餐对不上，改 `VOLC_*_RESOURCE_ID` |
 | 火山也慢到 300ms | 开了**系统级全局代理**，把国内流量也绕出境了。改成规则模式 |
-| AI 某几轮干脆不接话 | OpenAI 那一跳的代理节点不稳，换节点 |
+| AI 某几轮干脆不接话 | DeepSeek 那一跳被代理绕慢或绕挂了，先直连再查 |
 
 页面上的 **📶 测线路** 按钮单独测 LLM→TTS 这一段，不用打 LINE、不碰声卡，
 让 AI 自说自话 15 秒。要看三件事：
@@ -222,20 +237,25 @@ TLS 握手才暴露。所以脚本一定要走完 TLS。
 输入是虚拟声卡的线路信号，不是真人麦克风，Chrome 那套为麦克风设计的
 回声消除 / 降噪 / 自动增益套上去会把对方的声音削得断断续续。所以回声全靠下面两层扛：
 
-1. AI 说话期间 VAD 阈值自动抬高 2.2 倍，且要求连续 240ms 有声
-   （`lib/vad.js` 的 `setGuard`）
-2. **确认式打断**：VAD 响了只是"按住播放"，要等 ASR 真吐出 ≥2 个字才执行完整打断。
+1. AI 说话期间进入回声模式：把扬声器漏进麦的能量当成底噪，只有明显更大的声音才算插话
+   （`lib/vad.js` 的 `setGuard`）。免提时尤其依赖这一层。
+2. AI 说话时不把麦克风送给 ASR，避免把自己的词识别成客户在说。
+3. **确认式打断**：VAD 响了只是"按住播放"，要等 ASR 真吐出 ≥2 个字、且不像正在念的稿子，才执行完整打断。
    按住期间音频是扣在浏览器手里的，误报了原样接回去，一个字不漏
 
 还是被误打断就把 `BARGE_MIN_CHARS` 调到 3，或 `VAD_RATIO` 调高。
 反过来，如果真打断时反应太慢，把 `BARGE_CONFIRM_MS` 调小。
+
+手机免提：页面采集已打开浏览器 AEC。仍可能漏一点，所以服务端还有上面三层。尽量让手机离嘴近一些、音量不要开到最大。
+
+说完后客户一直不接话，大约 8 秒会追问一句；再大约 10 秒还不说话就道别并结束通话（`IDLE_NUDGE_MS` / `IDLE_BYE_MS`）。
 
 ### 首字延迟偏高
 
 按贡献从大到小排：
 
 1. `VAD_SILENCE_MS` —— 这是最大头，500ms 里有 500ms 是纯等
-2. LLM 那一跳的代理绕远了，`npm run check-proxy` 看握手耗时
+2. LLM 那一跳被系统代理绕远了，`npm run check-proxy` 看握手耗时
 3. 分句器的 `firstMin`（`lib/chunker.js`，默认 2）——第一句在首个软标点就切出去，
    所以 "嗯，" 这种两个字的开头能立刻送进 TTS
 4. `LLM_MODEL` 换个更快的
@@ -272,7 +292,7 @@ lib/session.js         编排器。状态机、轮次判断、打断、上下文
 lib/vad.js             能量 VAD，自适应噪声底
 lib/volc-asr.js        火山流式 ASR 客户端
 lib/volc-tts.js        火山双向流式 TTS 客户端
-lib/llm.js             OpenAI 流式对话（手写 SSE，为了能吃代理 agent）
+lib/llm.js             DeepSeek 流式对话（OpenAI 兼容协议，手写 SSE）
 lib/chunker.js         分句切分器
 lib/resample.js        24kHz → 16kHz 降采样
 lib/protocol.js        火山二进制帧编解码
@@ -302,6 +322,6 @@ public/voices.json     99 个音色的清单，页面下拉框的数据源
 
 ## 十、费用
 
-三家分别计费：火山 ASR 按时长、火山 TTS 按字数、OpenAI 按 token。
+三家分别计费：火山 ASR 按时长、火山 TTS 按字数、DeepSeek 按 token。
 TTS 的计费字数会在每轮结束时由服务端返回（代码里已经在收），比 Realtime 的音频 token
 便宜不少，但仍然是按用量走的，测试注意控制时长。

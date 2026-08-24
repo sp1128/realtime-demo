@@ -1,5 +1,5 @@
 // 链路体检：完全不经过本项目的服务，用裸 net + tls 直接量两件事——
-//   1. 经你的代理，能不能连上 api.openai.com（LLM 那一跳）
+//   1. 不经代理，能不能直连 api.deepseek.com（LLM 那一跳）
 //   2. 不经代理，能不能直连 openspeech.bytedance.com（火山 ASR / TTS 两跳）
 //
 // 为什么不能只看 CONNECT 是否返回 200：
@@ -116,16 +116,17 @@ const volc = await run("直连 openspeech.bytedance.com:443（火山 ASR / TTS�
   direct("openspeech.bytedance.com"),
 );
 
-// ---- OpenAI：LLM 那一跳 ----
+// ---- DeepSeek：LLM 那一跳，国内直连 ----
+const llmHost = process.env.LLM_HOST || "api.deepseek.com";
 const raw = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
-let openai;
+let llm;
 if (raw) {
   const proxy = new URL(raw);
-  openai = await run(`经 ${proxy.origin} 连 api.openai.com:443（LLM）`, () =>
-    viaProxy(proxy, "api.openai.com"),
+  llm = await run(`经 ${proxy.origin} 连 ${llmHost}:443（LLM，配了代理）`, () =>
+    viaProxy(proxy, llmHost),
   );
 } else {
-  openai = await run("直连 api.openai.com:443（LLM，没配代理）", () => direct("api.openai.com"));
+  llm = await run(`直连 ${llmHost}:443（LLM）`, () => direct(llmHost));
 }
 
 // ---- 结论 ----
@@ -133,8 +134,8 @@ console.log(`\n──────── 结论 ────────`);
 
 if (volc.rate < 100) {
   console.log("❌ 火山连不稳。这两跳是语音的命根子，它不通整个通话就是哑的。");
-  console.log("   最常见的原因是代理被设成了全局：火山是国内服务，不该走代理。");
-  console.log("   本项目只给 LLM 那一跳挂 agent，但如果你在系统层面开了全局代理，这里也会被绕进去。");
+  console.log("   最常见的原因是代理被设成了全局：火山和 DeepSeek 都是国内服务，不该走代理。");
+  console.log("   本项目默认直连 LLM，但如果你在系统层面开了全局代理，这里也会被绕进去。");
 } else if (volc.avg > 300) {
   console.log(`⚠️ 火山能连但慢（${volc.avg.toFixed(0)}ms）。国内直连正常应该在 100ms 以内。`);
   console.log("   八成是被系统级全局代理绕出境了，关掉全局模式改成规则模式。");
@@ -142,19 +143,23 @@ if (volc.rate < 100) {
   console.log(`✅ 火山直连正常（${volc.avg.toFixed(0)}ms），语音那两跳没问题。`);
 }
 
-if (openai.rate === 100 && openai.avg < 3000) {
-  console.log(`✅ OpenAI 可达（${openai.avg.toFixed(0)}ms），LLM 那一跳没问题。`);
-} else if (openai.rate >= 80) {
-  console.log("⚠️ OpenAI 偶尔连不上。表现是某几轮 AI 干脆不接话，页面会报 LLM 错误。");
-  console.log("   换个代理节点再跑一次，直到成功率 100%。");
+if (llm.rate === 100 && llm.avg < 1500) {
+  console.log(`✅ DeepSeek 可达（${llm.avg.toFixed(0)}ms），LLM 那一跳没问题。`);
+} else if (llm.rate >= 80) {
+  console.log("⚠️ DeepSeek 偶尔连不上。表现是某几轮 AI 干脆不接话，页面会报 LLM 错误。");
+  if (raw) console.log("   DeepSeek 是国内服务，先把 .env 里的 HTTPS_PROXY 注释掉再试直连。");
 } else {
-  console.log("❌ OpenAI 基本连不上，AI 一句话都说不出来。");
-  console.log("   去代理客户端里换节点，再跑一次这个脚本。");
+  console.log("❌ DeepSeek 基本连不上，AI 一句话都说不出来。");
+  if (raw) {
+    console.log("   先注释掉 HTTPS_PROXY 直连；直连也不通再考虑换节点。");
+  } else {
+    console.log("   检查本机网络，或在 .env 里临时加 HTTPS_PROXY 试一次。");
+  }
 }
 
-if (openai.avg > 1500) {
+if (llm.avg > 800) {
   console.log(
-    `\n💡 OpenAI 这一跳握手 ${openai.avg.toFixed(0)}ms，首字延迟会明显偏高。` +
-      "\n   换个更近的节点最有效；实在不行就把 LLM 也换成国内模型（改 .env 里的 LLM_MODEL 和接口地址）。",
+    `\n💡 DeepSeek 这一跳握手 ${llm.avg.toFixed(0)}ms，国内直连正常应在一两百毫秒内。` +
+      "\n   八成是被系统级全局代理绕出境了；.env 里的 HTTPS_PROXY 对国内 LLM 通常没必要。",
   );
 }

@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Realtime AI 语音通话 Demo</title>
 <style>
   body {
@@ -52,6 +53,7 @@
     border-radius: 6px;
     padding: 6px 8px;
   }
+  #outputDevice, #inputDevice { width: 100%; max-width: 100%; box-sizing: border-box; }
   /* 没有扬声器，靠这两条音量表判断谁在说话 */
   .meter-row {
     display: flex;
@@ -112,19 +114,30 @@
     flex-shrink: 0;
   }
   .hint { font-size: 12px; color: #777; margin-top: 5px; min-height: 16px; }
+  #lanBanner {
+    display: none;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #1e3a5f;
+    border: 1px solid #3b82f6;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
 </style>
 </head>
 <body>
   <h1>🎙️ Realtime AI 语音通话 Demo</h1>
+  <div id="lanBanner"></div>
   <div id="status">状态：未连接</div>
 
   <div style="margin-bottom: 12px;">
-    <label>输出设备（选 CABLE Input 可把 AI 声音送进 LINE 麦克风）：</label><br/>
+    <label id="outputLabel">输出设备（选 CABLE Input 可把 AI 声音送进 LINE 麦克风）：</label><br/>
     <select id="outputDevice"></select>
   </div>
 
   <div style="margin-bottom: 12px;">
-    <label>输入设备（要选能听到对方声音的那一路，如 CABLE Output / 立体声混音）：</label><br/>
+    <label id="inputLabel">输入设备（要选能听到对方声音的那一路，如 CABLE Output / 立体声混音）：</label><br/>
     <select id="inputDevice"></select>
   </div>
 
@@ -168,12 +181,12 @@
 
   <div id="log"></div>
 
-  <audio id="aiAudio" autoplay></audio>
+  <audio id="aiAudio" autoplay playsinline webkit-playsinline></audio>
   <audio id="testAudio" loop></audio>
 
 <script>
 // ================= 架构 =================
-// 浏览器采音 → 本地 Node 服务(/ws) → 火山ASR → OpenAI LLM → 火山TTS → 原路返回。
+// 浏览器采音 → 本地 Node 服务(/ws) → 火山ASR → DeepSeek LLM → 火山TTS → 原路返回。
 // 浏览器这一端只管三件事：采音上传、按服务端指令播放/暂停/丢弃、汇报播了多久。
 // 所有的轮次判断、打断决策、上下文管理都在服务端，这边不做任何决定。
 // 音频格式两端写死：24000Hz 单声道 16bit 小端 PCM，base64 塞在 JSON 事件里传。
@@ -194,12 +207,31 @@ const aiAudioEl = document.getElementById("aiAudio");
 const outputSelect = document.getElementById("outputDevice");
 const inputSelect = document.getElementById("inputDevice");
 
+(function showLanHint() {
+  const el = document.getElementById("lanBanner");
+  if (!el) return;
+  const local = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  if (local) return;
+  el.style.display = "block";
+  if (location.protocol === "https:") {
+    el.textContent =
+      "已用电脑的局域网地址打开。证书是本机自签的，点「开始通话」时允许麦克风即可。输入选手机麦克风，输出用默认听筒/扬声器。";
+    const outL = document.getElementById("outputLabel");
+    const inL = document.getElementById("inputLabel");
+    if (outL) outL.textContent = "输出设备（一般选默认扬声器/听筒即可）：";
+    if (inL) inL.textContent = "输入设备（选手机麦克风）：";
+  } else {
+    el.textContent =
+      "当前是 HTTP。手机浏览器不给麦克风。请改用启动日志里的 https://电脑IP:3443 （证书报警选继续前往）。";
+  }
+})();
+
 // 采样率必须和服务端 lib/session.js 里的 OUT_SAMPLE_RATE 一致。
 // 改一边不改另一边不会报错，只会变调变速——最难查的那类问题。
 // 注意火山 ASR 只吃 16000Hz，那一道降采样在服务端 lib/resample.js 里做，跟这里无关
 const SAMPLE_RATE = 24000;
-// 每攒够多少个采样点发一包。960 点 = 40ms，是延迟和包数量之间比较舒服的折中
-const CHUNK_SAMPLES = 960;
+// 每攒够多少个采样点发一包。480 点 = 20ms，ASR 能更早看到人声
+const CHUNK_SAMPLES = 480;
 // 播放侧的抖动缓冲：收到的音频统一往后推这么多毫秒再播。
 // 走代理时到达节奏不均匀，垫这一层能把断续磨平，代价是听感延迟增加同等数值。
 const PLAY_LEAD_MS = 140;
@@ -334,20 +366,35 @@ function floatToPcm16(f32) {
 
 async function startCapture() {
   const inputId = inputSelect.value;
-  // 输入是虚拟声卡的线路信号，不是真人麦克风。
-  // Chrome 默认开的这三个处理是给麦克风设计的，套在这里会把对方声音削得断断续续，必须关掉。
-  micStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      ...(inputId ? { deviceId: { exact: inputId } } : {}),
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      channelCount: 1,
-    },
-  });
+  const inputLabel = (inputSelect.selectedOptions[0] && inputSelect.selectedOptions[0].text) || "";
+  // 虚拟声卡/立体声混音是线路信号，Chrome 的 AEC/NS/AGC 会把对方声音削断。
+  // 真人麦克风反而需要这三项，不然扬声器里的 AI 声漏进麦，识别又慢又不准。
+  const lineIn = /cable|line|stereo\s*mix|混音|虚拟|vb-audio|blackhole/i.test(inputLabel);
+  // 真人麦必须开 AEC：免提时扬声器里的 AI 声会灌进麦，不消回声就会打不断、识别成自己的词。
+  // 线路输入（CABLE）反而要关，否则 Chrome 会把对方声音当回声削掉。
+  const micAudio = {
+    ...(inputId ? { deviceId: { exact: inputId } } : {}),
+    echoCancellation: !lineIn,
+    noiseSuppression: !lineIn,
+    autoGainControl: !lineIn,
+    channelCount: 1,
+  };
+  if (!lineIn) micAudio.voiceIsolation = true;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: micAudio });
+  } catch (e) {
+    if (micAudio.voiceIsolation) {
+      delete micAudio.voiceIsolation;
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: micAudio });
+    } else {
+      throw e;
+    }
+  }
   const settings = micStream.getAudioTracks()[0].getSettings();
   dbg(
-    `🎚️ 采集参数: ${settings.sampleRate || "?"}Hz / AEC=${settings.echoCancellation} / NS=${settings.noiseSuppression} / AGC=${settings.autoGainControl}`
+    `🎚️ 采集参数: ${settings.sampleRate || "?"}Hz / AEC=${settings.echoCancellation} / NS=${settings.noiseSuppression} / AGC=${settings.autoGainControl}` +
+      (settings.voiceIsolation != null ? ` / 人声隔离=${settings.voiceIsolation}` : "") +
+      (lineIn ? "（线路输入，处理已关）" : "（麦克风，回声消除已开）")
   );
 
   micSource = audioCtx.createMediaStreamSource(micStream);
@@ -419,10 +466,19 @@ let underruns = 0;
 let scheduledMs = 0;         // 当前这轮回复已排进播放队列的音频总时长
 
 // 打断待确认期间用：先把新到的音频扣在手里不排期。
-// 为什么不是直接丢：服务端还没确认这是不是真打断，万一是杂音误报，
-// 丢了这段客户就会听到 AI 的话中间少了一截。扣着的话恢复播放能无缝接上。
+// 已经排进声卡、还没出耳朵的那一截也要停住并攒着——
+// 以前只扣新分片、已排期的继续播，客户会觉得"根本打不断"。
 let playPaused = false;
 const pausedChunks = [];
+
+// TTS 的 PCM 已经发完，等声卡队列播干。干了就告诉服务端：这一轮真正说完了
+let awaitingDrain = false;
+let drainTimer = null;
+// 打断后第一包音频尽快起播，不要再垫 PLAY_LEAD_MS
+let startASAP = false;
+const FADE_MS = 420;
+let fadeGen = 0;
+let pendingReplace = false;
 
 function setupPlayback() {
   aiGain = audioCtx.createGain();
@@ -439,6 +495,15 @@ function pushPcm(bytes) {
   if (playPaused) {
     pausedChunks.push(bytes);
     return;
+  }
+  // 垫话到了：这时再切掉正在淡出的旧声音，中间不会空一截
+  if (pendingReplace) {
+    pendingReplace = false;
+    stopSources(false);
+    playCursor = 0;
+    scheduledMs = 0;
+    snapGain(1);
+    startASAP = true;
   }
   recvAudioBytes += bytes.length;
   const n = bytes.length >> 1; // 按 2 字节对齐，多出来的半个采样点丢掉
@@ -460,14 +525,22 @@ function pushPcm(bytes) {
   if (playCursor < audioCtx.currentTime) {
     // 本轮刚开口时是正常的（队列本来就空），说到一半才播空才是真欠载
     if (scheduledMs > 0) underruns++;
-    // 重新起播时垫上抖动缓冲，给后面的分片留出到达时间
-    playCursor = audioCtx.currentTime + PLAY_LEAD_MS / 1000;
+    // 打断后第一包要尽快出声，别再垫 140ms，不然旧声音淡完会空一截
+    const lead = startASAP ? 24 : PLAY_LEAD_MS;
+    playCursor = audioCtx.currentTime + lead / 1000;
+    startASAP = false;
   }
+  src._bytes = bytes;
+  src._startAt = playCursor;
+  src._dur = buf.duration;
   src.start(playCursor);
   playCursor += buf.duration;
   scheduledMs += buf.duration * 1000;
   playSources.add(src);
-  src.onended = () => playSources.delete(src);
+  src.onended = () => {
+    playSources.delete(src);
+    maybeNotifyPlaybackEnded();
+  };
 }
 
 // 已经真正出过声的毫秒数 = 排进去的总时长 - 还堆在队列里没播的
@@ -476,43 +549,132 @@ function playedMs() {
   return Math.max(0, scheduledMs - queued);
 }
 
-// 服务端怀疑有人插话时用：先按住，别急着丢。
-// 已经排进声卡的那 100 多毫秒还是会播完，听感上就是一句话自然收了尾。
-// 同时把"到此为止播了多少毫秒"汇报上去——服务端就靠这个数把 AI 那句话
-// 截在客户真正听到的位置，不然模型会以为自己已经讲完了。
+// 从 PCM16 字节里切掉已经出过声的部分，剩下的留给 resume 接着排
+function slicePcm16(bytes, elapsedSec) {
+  let skip = Math.floor(elapsedSec * SAMPLE_RATE) * 2;
+  if (skip < 0) skip = 0;
+  skip -= skip % 2;
+  if (skip >= bytes.length) return null;
+  return bytes.subarray(skip);
+}
+
+function rampGain(to, ms) {
+  if (!aiGain || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  const from = Number.isFinite(aiGain.gain.value) ? aiGain.gain.value : 1;
+  aiGain.gain.cancelScheduledValues(now);
+  aiGain.gain.setValueAtTime(from, now);
+  if (ms <= 0) aiGain.gain.setValueAtTime(to, now);
+  else aiGain.gain.linearRampToValueAtTime(to, now + ms / 1000);
+}
+
+function snapGain(to) {
+  if (!aiGain || !audioCtx) return;
+  const now = audioCtx.currentTime;
+  aiGain.gain.cancelScheduledValues(now);
+  aiGain.gain.setValueAtTime(to, now);
+}
+
+function stopSources(keepLeftover) {
+  if (!audioCtx) {
+    playSources.clear();
+    if (!keepLeftover) pausedChunks.length = 0;
+    return;
+  }
+  const now = audioCtx.currentTime;
+  const leftover = [];
+  for (const src of playSources) {
+    const startAt = src._startAt;
+    const dur = src._dur;
+    const bytes = src._bytes;
+    try {
+      src.onended = null;
+      src.stop();
+    } catch (e) {}
+    if (!keepLeftover || !bytes || startAt == null) continue;
+    if (startAt + dur <= now) continue;
+    if (startAt >= now) leftover.push(bytes);
+    else {
+      const rest = slicePcm16(bytes, now - startAt);
+      if (rest && rest.length) leftover.push(rest);
+    }
+  }
+  playSources.clear();
+  if (keepLeftover) pausedChunks.unshift(...leftover);
+  else pausedChunks.length = 0;
+}
+
+// 怀疑有人插话：先把音量收掉，听感是话说到一半收住，而不是咔地掐断。
+// 淡完再把还没听到的 PCM 扣下来。误报就 resume 接回去。
 function pausePlayback() {
   if (playPaused) return;
   playPaused = true;
   sendEvent({ type: "playback.report", playedMs: Math.round(playedMs()) });
+  rampGain(0, FADE_MS);
+  const gen = ++fadeGen;
+  setTimeout(() => {
+    if (gen !== fadeGen || !playPaused) return;
+    // 音量已经收到 0，先不停源。误报就拉回来接着念；确认了等垫话到了再切
+    sendEvent({ type: "playback.report", playedMs: Math.round(playedMs()) });
+  }, FADE_MS + 8);
 }
 
-// 误报，接着播。扣在手里的分片按原顺序补回去，一个字都不会漏
+// 误报，接着播。淡出还没停完就只把音量拉回来；已经扣下来的按原顺序补回去
 function resumePlayback() {
   if (!playPaused) return;
   playPaused = false;
+  fadeGen++;
+  pendingReplace = false;
+  if (playSources.size > 0) rampGain(1, 80);
+  else snapGain(1);
   const queued = pausedChunks.splice(0);
   for (const b of queued) pushPcm(b);
 }
 
-// 确认是真打断：把还没播的全部扔掉。
-// 服务端停止生成只解决"不再产生新的"，已经发到本地的音频得自己丢，
-// 不丢的话对方打断了还要再听 AI 说一两秒，非常出戏。
-function flushPlayback() {
-  for (const s of playSources) {
-    try {
-      s.onended = null;
-      s.stop();
-    } catch (e) {}
+function maybeNotifyPlaybackEnded() {
+  if (!awaitingDrain || playPaused) return;
+  if (pausedChunks.length || playSources.size) return;
+  if (audioCtx && playCursor > audioCtx.currentTime + 0.05) {
+    clearTimeout(drainTimer);
+    drainTimer = setTimeout(
+      maybeNotifyPlaybackEnded,
+      (playCursor - audioCtx.currentTime) * 1000 + 20,
+    );
+    return;
   }
-  playSources.clear();
+  awaitingDrain = false;
+  clearTimeout(drainTimer);
+  drainTimer = null;
+  sendEvent({ type: "playback.ended" });
+}
+
+// 确认打断：先别把旧声音掐死。垫话音频一到，pushPcm 里再切过去。
+function flushPlayback() {
+  fadeGen++;
+  awaitingDrain = false;
+  clearTimeout(drainTimer);
+  drainTimer = null;
+  playPaused = false;
   pausedChunks.length = 0;
+  pendingReplace = true;
+  startASAP = true;
+}
+
+function hardStopPlayback() {
+  fadeGen++;
+  pendingReplace = false;
+  awaitingDrain = false;
+  clearTimeout(drainTimer);
+  drainTimer = null;
+  stopSources(false);
   playPaused = false;
   playCursor = 0;
   scheduledMs = 0;
+  snapGain(1);
 }
 
 function teardownPlayback() {
-  flushPlayback();
+  hardStopPlayback();
   if (aiGain) {
     aiGain.disconnect();
     aiGain = null;
@@ -787,7 +949,10 @@ async function listDevices() {
     const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
     tmp.getTracks().forEach((t) => t.stop());
   } catch (e) {
-    log("⚠️ 无法获取麦克风权限：" + e.message);
+    const why = !window.isSecureContext
+      ? "当前不是 https/localhost，浏览器禁止麦克风。请用启动日志里的 https://电脑IP:3443"
+      : e.message;
+    log("⚠️ 无法获取麦克风权限：" + why);
   }
 
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -878,7 +1043,7 @@ async function start() {
 
     setStatus("正在连接本地中转...");
     await connectRelay();
-    step("接入火山 / OpenAI");
+    step("接入火山 / DeepSeek");
     dbg("⏱️ 启动各步耗时: " + steps.join(" | "));
   } catch (e) {
     log("❌ 启动失败: " + e.message);
@@ -899,7 +1064,7 @@ function connectRelay() {
 
     ws.addEventListener("open", () => {
       // 到这里只是连上了本机服务。上游还有三条连接要建（火山 ASR、火山 TTS、
-      // 以及第一次用到时才发起的 OpenAI），全部就绪服务端才会发 ready
+      // 以及第一次用到时才发起的 DeepSeek），全部就绪服务端才会发 ready
       setStatus("本地中转已连接，正在接入语音服务...");
     });
 
@@ -927,7 +1092,7 @@ function connectRelay() {
     ws.addEventListener("close", () => {
       if (!settled) {
         settled = true;
-        // 服务端连不上 OpenAI 时会先发一条 error 事件再关，具体原因已经打在日志里了
+        // 服务端连不上 DeepSeek 时会先发一条 error 事件再关，具体原因已经打在日志里了
         reject(new Error("中转连接被关闭，看上面那条错误"));
         return;
       }
@@ -1076,12 +1241,21 @@ function handleEvent(evt) {
       finishLine();
       barges++;
       break;
+    case "tts.drain":
+      awaitingDrain = true;
+      clearTimeout(drainTimer);
+      drainTimer = setTimeout(maybeNotifyPlaybackEnded, 80);
+      break;
 
     case "log":
       log(evt.text, "msg-sys");
       break;
     case "error":
       log("❌ 错误: " + evt.message, "msg-sys");
+      break;
+    case "hangup":
+      log("📞 对方一直没接话，已结束通话", "msg-sys");
+      stop();
       break;
   }
 }
@@ -1105,7 +1279,7 @@ function reportStats() {
       "msg-sys"
     );
     if (avg > 2000) {
-      log("   偏慢的话优先查这两处：LLM 那一跳的代理是不是绕远了；分句器的 firstMin 能不能再调小", "msg-sys");
+      log("   偏慢的话优先查这两处：LLM 那一跳是不是被代理绕远了；分句器的 firstMin 能不能再调小", "msg-sys");
     }
   }
   const recvSec = recvAudioBytes / (SAMPLE_RATE * 2);
@@ -1151,7 +1325,7 @@ function stop() {
 
 // ---- 输出通路自测 ----
 // 走的路径跟 AI 音频完全一样：<audio> 元素 + setSinkId 到选中的输出设备。
-// 这样能把「输出通不通」和 WebSocket / OpenAI 完全隔离开单独验证。
+// 这样能把「输出通不通」和 WebSocket / DeepSeek 完全隔离开单独验证。
 // Float32 采样 -> 16bit 单声道 WAV。测试音和录音共用
 function encodeWav(samples, sampleRate) {
   const n = samples.length;
@@ -1432,7 +1606,7 @@ netBtn.addEventListener("click", async () => {
         `说明比实时快、缓冲越垫越厚；<100% 才会卡）`,
       "msg-sys"
     );
-    log(`   接入 OpenAI 耗时 ${r.readyMs.toFixed(0)}ms　（只在建连时付一次，不影响通话中）`, "msg-sys");
+    log(`   接入 DeepSeek 耗时 ${r.readyMs.toFixed(0)}ms　（只在建连时付一次，不影响通话中）`, "msg-sys");
   } catch (e) {
     log("❌ 线路测试失败: " + e.message);
   } finally {

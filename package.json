@@ -12,6 +12,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "https-proxy-agent": "^9.1.0",
+    "selfsigned": "^5.5.0",
     "ws": "^8.21.3"
   }
 }
