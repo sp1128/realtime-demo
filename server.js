@@ -123,6 +123,9 @@ const BARGE_ECHO_MIN_CHARS = Number(process.env.BARGE_ECHO_MIN_CHARS || 5);
 const PREROLL_MS = Number(process.env.PREROLL_MS || 500);
 // ASR 内部静音多久定稿。跟 VAD 对齐，提交时二遍识别的结果才赶得上
 const ASR_END_WINDOW_MS = Number(process.env.ASR_END_WINDOW_MS || 400);
+// 情绪/语速检测。免费，只是在定稿分句上多带几个字段。
+// 关掉的话 LLM 就只看得到文字，听不出客户是不是急了
+const ASR_EMOTION = process.env.ASR_EMOTION !== "false";
 
 // 接通后由 AI 先开口（外呼场景需要），false 则等客户先说话
 const AUTO_GREET = process.env.AUTO_GREET !== "false";
@@ -237,6 +240,7 @@ function onClient(client, req) {
     bargeEchoMinChars: BARGE_ECHO_MIN_CHARS,
     prerollMs: PREROLL_MS,
     asrEndWindowMs: ASR_END_WINDOW_MS,
+    asrDetectEmotion: ASR_EMOTION,
     autoGreet: AUTO_GREET,
     greetDelayMs: GREET_DELAY_MS,
     idleNudgeMs: IDLE_NUDGE_MS,

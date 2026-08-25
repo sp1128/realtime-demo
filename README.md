@@ -329,10 +329,6 @@ public/voices.json     99 个音色的清单，页面下拉框的数据源
 
 这几个火山已经支持、代码里没接的，按价值排：
 
-- **`enable_emotion_detection`**：ASR 能返回每句话的情绪标签
-  （angry / happy / neutral / sad / surprise）。级联架构最大的损失就是模型看不到语气，
-  这个能把它补回来——把标签拼进给 LLM 的用户消息里，提示词第十八节那套
-  「客户情绪优先」就真的能生效了。
 - **`corpus.context` 的 `dialog_ctx`**：把最近几轮对话作为上下文喂给 ASR，
   识别准确率会明显提升（模型知道刚才在聊什么）。历史就在 `lib/session.js` 手里，接起来不难。
 - **`context_texts`**：TTS 的语音指令，比如「用沉稳一点的语气说」，
