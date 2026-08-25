@@ -552,7 +552,9 @@ function pushPcm(bytes) {
   };
 }
 
-// 已经真正出过声的毫秒数 = 排进去的总时长 - 还堆在队列里没播的
+// 本轮已经真正出过声的毫秒数 = 本轮排进去的总时长 - 还堆在队列里没播的。
+// 注意"本轮"：scheduledMs 必须在每轮开始时清零（见 state=THINKING 分支），
+// 否则这里返回的是整通电话的累计值，服务端的打断截断会算错
 function playedMs() {
   const queued = Math.max(0, (playCursor - audioCtx.currentTime) * 1000);
   return Math.max(0, scheduledMs - queued);
@@ -1221,6 +1223,14 @@ function handleEvent(evt) {
         setStatus("对方说完了，AI 正在思考...");
         aiText = "";
         thinkAt = performance.now();
+        // 新一轮开始，本轮的播放记账清零。
+        // 不清会连坏两件事：
+        //   1. 欠载判据 `scheduledMs > 0` 本意是"排除每轮刚开口时队列本来就空"，
+        //      但从第二轮起 scheduledMs 一直是正的，于是每轮开口都被记成一次欠载
+        //   2. playedMs() 会变成整通电话的累计值。它报给服务端做打断截断，
+        //      累计到几万毫秒后，服务端会以为整轮都播完了，把完整文本写进历史——
+        //      正是当初做截断要避免的事
+        scheduledMs = 0;
       } else if (evt.state === "SPEAKING") {
         setStatus("🟢 AI 正在说话...");
         if (thinkAt) {

@@ -117,6 +117,10 @@ const BARGE_MIN_CHARS = Number(process.env.BARGE_MIN_CHARS || 2);
 // 短于这个长度的转写不做回声比对，一律当成客户真在说话。
 // 选择题抢答（「期货」「股票」）就长在 AI 正念的那句里，一比对就被吃掉
 const BARGE_ECHO_MIN_CHARS = Number(process.env.BARGE_ECHO_MIN_CHARS || 5);
+// AI 说话期间保留多少毫秒真音频，插话触发时补送给 ASR。
+// VAD 要连续几帧才确认有人说话，这段时间的音频已经被当静音喂掉了，
+// 不补的话 ASR 从半个字开始听，很难在确认窗口内出字
+const PREROLL_MS = Number(process.env.PREROLL_MS || 500);
 // ASR 内部静音多久定稿。跟 VAD 对齐，提交时二遍识别的结果才赶得上
 const ASR_END_WINDOW_MS = Number(process.env.ASR_END_WINDOW_MS || 400);
 
@@ -229,6 +233,7 @@ function onClient(client, req) {
     bargeConfirmMs: BARGE_CONFIRM_MS,
     bargeMinChars: BARGE_MIN_CHARS,
     bargeEchoMinChars: BARGE_ECHO_MIN_CHARS,
+    prerollMs: PREROLL_MS,
     asrEndWindowMs: ASR_END_WINDOW_MS,
     autoGreet: AUTO_GREET,
     greetDelayMs: GREET_DELAY_MS,
