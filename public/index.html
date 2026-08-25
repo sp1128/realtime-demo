@@ -142,6 +142,13 @@
   </div>
 
   <div style="margin-bottom: 12px;">
+    <label>对话语种（通话中不能改）：</label><br/>
+    <label style="margin-right: 16px;"><input type="radio" name="lang" value="zh" checked /> 中文</label>
+    <label><input type="radio" name="lang" value="en" /> English</label>
+    <div id="langHint" class="hint"></div>
+  </div>
+
+  <div style="margin-bottom: 12px;">
     <label>对方称呼（每次拨号前填，AI 开场会这样称呼他）：</label><br/>
     <input id="calleeName" placeholder="例：叶升辉先生 / 王女士 / 李经理" style="width: 100%; box-sizing: border-box;" />
     <div id="calleeHint" class="hint"></div>
@@ -769,19 +776,41 @@ function stopMeters() {
 // 连上以后再发消息就晚了，第一句已经用默认音色念出去了。
 // 对方称呼。整段会被拼进提示词的开场示例里，所以拨号前必须填——
 // 不填的话 AI 会用提示词里的默认姓名，真实外呼里叫错名字是致命的
+// 对话语种。切换会连带改三处：称呼的示例和校验、音色列表的筛选、
+// 以及建连时带给服务端的 lang 参数（服务端据此选提示词、分句阈值和默认音色）
+const LANG_KEY = "realtime-demo.lang";
+const langHint = document.getElementById("langHint");
+function currentLang() {
+  const el = document.querySelector('input[name="lang"]:checked');
+  return el && el.value === "en" ? "en" : "zh";
+}
+
 const calleeName = document.getElementById("calleeName");
 const calleeHint = document.getElementById("calleeHint");
 const CALLEE_KEY = "realtime-demo.callee";
 
+// 英文称呼有空格和点（Mr. Smith），中文没有，所以校验按语种分开。
+// 这个值会被拼进提示词，两种都挡掉换行、引号和其它标点
 function calleeOk() {
+  if (currentLang() === "en") return /^[A-Za-z][A-Za-z.\-' ]{1,39}$/.test(calleeName.value.trim());
   return /^[一-龥A-Za-z·]{2,20}$/.test(calleeName.value.trim());
 }
 function syncCallee() {
   const v = calleeName.value.trim();
   localStorage.setItem(CALLEE_KEY, v);
+  const en = currentLang() === "en";
+  calleeName.placeholder = en
+    ? "e.g. Mr. Smith / Ms. Chen / David"
+    : "例：叶升辉先生 / 王女士 / 李经理";
   if (!v) calleeHint.textContent = "拨号前必须填，AI 开场要用这个称呼";
-  else if (!calleeOk()) calleeHint.textContent = "只能是 2~20 个中文或字母";
-  else calleeHint.textContent = `开场会说「请问是${v}吗？」`;
+  else if (!calleeOk())
+    calleeHint.textContent = en
+      ? "英文：字母开头，可含空格、点和连字符，如 Mr. Smith"
+      : "中文：2~20 个汉字或字母";
+  else
+    calleeHint.textContent = en
+      ? `开场会说 "Is this ${v}?"`
+      : `开场会说「请问是${v}吗？」`;
   startBtn.disabled = running || !calleeOk();
 }
 calleeName.value = localStorage.getItem(CALLEE_KEY) || "";
@@ -818,6 +847,10 @@ function renderVoices(keyword) {
   const cur = voiceSelect.value;
   voiceSelect.innerHTML = "";
 
+  // 只留当前语种的音色。voices.json 里英文音色的 lang 是 en，其余都是中文。
+  // 中文通话里混进 Tim/Dacey 没意义，英文通话用中文音色又会带明显口音
+  const wantEn = currentLang() === "en";
+  const langOk = (v) => (v.lang === "en") === wantEn;
   const hit = (v) =>
     !kw ||
     v.name.includes(kw) ||
@@ -828,7 +861,10 @@ function renderVoices(keyword) {
   let count = 0;
   for (const scene of SCENE_ORDER) {
     const list = allVoices.filter(
-      (v) => (scene === PICK_GROUP ? v.pick : !v.pick && v.scene === scene) && hit(v),
+      (v) =>
+        langOk(v) &&
+        (scene === PICK_GROUP ? v.pick : !v.pick && v.scene === scene) &&
+        hit(v),
     );
     if (!list.length) continue;
     const group = document.createElement("optgroup");
@@ -851,9 +887,16 @@ function renderVoices(keyword) {
     voiceHint.textContent = "";
     return;
   }
-  // 筛选后尽量保住原来的选择，保不住就退到第一个
-  if (cur && allVoices.some((v) => v.code === cur) && hit(allVoices.find((v) => v.code === cur))) {
-    voiceSelect.value = cur;
+  // 筛选后尽量保住原来的选择，保不住就退到第一个。
+  //
+  // 这里必须连 langOk 一起判：切到英文时上一次选的中文音色仍然在 allVoices 里、
+  // 也仍然能通过关键字筛选，但它的 option 已经被语种过滤掉了。
+  // 给 select 赋一个不在 DOM 里的 value，结果不是报错而是 selectedIndex = -1，
+  // 变成"什么都没选"，relayUrl 就不带 speaker 参数了——静默失效，很难查。
+  const keep = cur && allVoices.find((v) => v.code === cur);
+  if (keep && langOk(keep) && hit(keep)) voiceSelect.value = cur;
+  if (voiceSelect.selectedIndex < 0 && voiceSelect.options.length) {
+    voiceSelect.selectedIndex = 0;
   }
   updateVoiceHint();
 }
@@ -895,6 +938,22 @@ async function loadVoices() {
 }
 
 voiceFilter.addEventListener("input", () => renderVoices(voiceFilter.value));
+
+// 切语种要重来一遍：音色列表换一批，称呼的校验规则和示例也变了
+function onLangChange() {
+  const lang = currentLang();
+  localStorage.setItem(LANG_KEY, lang);
+  langHint.textContent =
+    lang === "en"
+      ? "AI 全程说英文，音色列表已切到英文音色"
+      : "AI 全程说中文";
+  renderVoices(voiceFilter.value);
+  updateVoiceHint();
+  syncCallee();
+}
+document
+  .querySelectorAll('input[name="lang"]')
+  .forEach((r) => r.addEventListener("change", onLangChange));
 voiceSelect.addEventListener("change", updateVoiceHint);
 
 // 试听走的是官方给的示例音频，不消耗你的合成额度。
@@ -996,8 +1055,13 @@ function chosenVoice() {
     : null;
 }
 
-loadVoices();
-syncCallee();
+// 恢复上次选的语种，再让联动跑一遍——音色列表和称呼校验都依赖它
+const savedLang = localStorage.getItem(LANG_KEY);
+if (savedLang === "en") {
+  const el = document.querySelector('input[name="lang"][value="en"]');
+  if (el) el.checked = true;
+}
+loadVoices().then(onLangChange);
 
 
 async function listDevices() {
@@ -1042,6 +1106,7 @@ function relayUrl() {
   if (v.model) u += `&model=${encodeURIComponent(v.model)}`;
   const nm = calleeName.value.trim();
   if (nm) u += `&name=${encodeURIComponent(nm)}`;
+  u += `&lang=${currentLang()}`;
   return u;
 }
 
@@ -1053,6 +1118,7 @@ async function start() {
   }
   startBtn.disabled = true;
   calleeName.disabled = true;
+  document.querySelectorAll('input[name="lang"]').forEach((r) => (r.disabled = true));
   callStartedAt = Date.now();
   sentBytes = 0;
   recvAudioBytes = 0;
@@ -1393,6 +1459,7 @@ function stop() {
   }
 
   calleeName.disabled = false;
+  document.querySelectorAll('input[name="lang"]').forEach((r) => (r.disabled = false));
   useCustomVoice.disabled = false;
   customVoiceId.disabled = false;
   customVoiceRes.disabled = false;

@@ -84,12 +84,19 @@ const TTS_MODEL = process.env.VOLC_TTS_MODEL || "";
 // 设成空字符串就关掉
 const TTS_STYLE =
   process.env.VOLC_TTS_STYLE ??
-  "你可以一直用同一个语气说话吗？平稳一点，不要有情绪起伏。";
+  "一直用同一个语气说话，平稳一点，不要有情绪起伏。";
 
 // 音色 ID，在火山控制台「音色详情」里复制。
 // 音色和模型版本是绑死的：_uranus_bigtts / saturn_ 开头的是 2.0 音色，
 // _moon_bigtts 那批是 1.0 的，拿到 seed-tts-2.0 上用会失败
 const TTS_SPEAKER = process.env.VOLC_TTS_SPEAKER || "zh_female_vv_uranus_bigtts";
+// 英文通话的默认音色。中文音色念英文会带明显口音，所以按语种各留一个默认值
+const TTS_SPEAKER_EN =
+  process.env.VOLC_TTS_SPEAKER_EN || "en_male_tim_uranus_bigtts";
+// 英文的风格指令。跟中文那条一个作用，只是得用英文说，模型才听得进去
+const TTS_STYLE_EN =
+  process.env.VOLC_TTS_STYLE_EN ??
+  "Keep the same tone throughout, steady and even, no emotional swings.";
 // 语速偏移，0 是原速。范围大致 -50~100，负数更慢更沉稳
 const TTS_SPEECH_RATE = Number(process.env.VOLC_TTS_SPEECH_RATE || -5);
 
@@ -221,14 +228,18 @@ function onClient(client, req) {
   // 晚一步 TTS 会话已经用默认音色开出去了。
   // 白名单校验：这个值会直接进到发给火山的请求里，不能让页面随便塞东西
   let speaker = TTS_SPEAKER;
+  let speakerFromQuery = false;
   let ttsResource = TTS_RESOURCE_ID;
   let ttsModel = TTS_MODEL;
   let customerName = CUSTOMER_NAME;
+  // 对话语种。它决定四件事：提示词用哪份、分句阈值、默认音色、
+  // 以及 TTS 的 explicit_language
+  let lang = "zh";
   try {
     const qs = new URL(req.url, "http://localhost").searchParams;
     const q = qs.get("speaker");
     // 复刻音色的 ID 里可能有中划线，所以放开 -
-    if (q && /^[A-Za-z0-9_-]{1,256}$/.test(q)) speaker = q;
+    if (q && /^[A-Za-z0-9_-]{1,256}$/.test(q)) { speaker = q; speakerFromQuery = true; }
     else if (q) console.warn(`${tag} 音色名不合法，已忽略: ${q.slice(0, 40)}`);
 
     const r = qs.get("resource");
@@ -240,19 +251,26 @@ function onClient(client, req) {
     else if (m) console.warn(`${tag} 模型档位不合法，已忽略: ${m.slice(0, 40)}`);
 
     // 对方称呼。会被拼进提示词，所以限制字符集和长度，别让页面塞进整段指令
+    const lg = qs.get("lang");
+    if (lg === "en" || lg === "zh") lang = lg;
+
     const nm = (qs.get("name") || "").trim();
     if (nm && /^[一-龥A-Za-z·]{2,20}$/.test(nm)) customerName = nm;
     else if (nm) console.warn(`${tag} 称呼不合法，已忽略: ${nm.slice(0, 40)}`);
   } catch (e) {}
 
   console.log(
-    `${tag} 浏览器已接入（${customerName || "未填称呼"}｜音色 ${speaker} / ${ttsResource}` +
+    `${tag} 浏览器已接入（${lang === "en" ? "EN" : "中文"}｜${customerName || "未填称呼"}｜音色 ${speaker} / ${ttsResource}` +
       `${ttsModel ? " / " + ttsModel : ""}），正在连接火山 ASR / TTS…`,
   );
 
   const send = (obj) => {
     if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(obj));
   };
+
+  // 页面没带 speaker 就按语种取默认音色。英文用中文音色会有口音，
+  // 反过来也一样，所以不能只有一个全局默认
+  if (!speakerFromQuery) speaker = lang === "en" ? TTS_SPEAKER_EN : TTS_SPEAKER;
 
   const agent = makeProxyAgent();
   const session = new CallSession({
@@ -261,7 +279,8 @@ function onClient(client, req) {
     asrResourceId: ASR_RESOURCE_ID,
     ttsResourceId: ttsResource,
     ttsModel,
-    ttsStyle: TTS_STYLE,
+    lang,
+    ttsStyle: lang === "en" ? TTS_STYLE_EN : TTS_STYLE,
     speaker,
     speechRate: TTS_SPEECH_RATE,
     hotwords: HOTWORDS,
@@ -309,6 +328,7 @@ function onClient(client, req) {
       ttsResource,
       ttsModel,
       customerName,
+      lang,
       proxy: PROXY_URL || null,
     });
   });
