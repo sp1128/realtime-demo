@@ -74,6 +74,18 @@ const ALLOWED_TTS_RESOURCES = new Set([
 // 别拿它切复刻版本——那是上面的资源号决定的，填错直接 InvalidModel
 const TTS_MODEL = process.env.VOLC_TTS_MODEL || "";
 
+// 语音指令（context_texts）。用大白话跟 TTS 说话来约束风格。
+//
+// 默认这句是冲着"同一个音色听起来像好几个人"去的。实测（同句话念 8 遍、
+// 带同配置重复组量噪声）：句间基频标准差 8.9 → 7.2Hz、极差 30 → 21Hz，
+// 降幅远超 0.9Hz 的噪声。压不平但确实收窄。
+//
+// 注意它必须放在 additions 里，放 req_params 顶层完全不生效（见 volc-tts.js）。
+// 设成空字符串就关掉
+const TTS_STYLE =
+  process.env.VOLC_TTS_STYLE ??
+  "你可以一直用同一个语气说话吗？平稳一点，不要有情绪起伏。";
+
 // 音色 ID，在火山控制台「音色详情」里复制。
 // 音色和模型版本是绑死的：_uranus_bigtts / saturn_ 开头的是 2.0 音色，
 // _moon_bigtts 那批是 1.0 的，拿到 seed-tts-2.0 上用会失败
@@ -243,6 +255,7 @@ function onClient(client, req) {
     asrResourceId: ASR_RESOURCE_ID,
     ttsResourceId: ttsResource,
     ttsModel,
+    ttsStyle: TTS_STYLE,
     speaker,
     speechRate: TTS_SPEECH_RATE,
     hotwords: HOTWORDS,
