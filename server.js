@@ -135,6 +135,11 @@ const GREET_DELAY_MS = Number(process.env.GREET_DELAY_MS || 400);
 // 嫌它催得急就把 IDLE_NUDGE_MS 往回调
 const IDLE_NUDGE_MS = Number(process.env.IDLE_NUDGE_MS || 4000);
 const IDLE_BYE_MS = Number(process.env.IDLE_BYE_MS || 10000);
+// 客户的称呼，用在"开场没人应"时那句"喂，X先生，能听到吗"。
+// 不填就从 AI 自己说过的开场白里抠（提示词里写的是"请问是叶升辉先生吗"）
+const CUSTOMER_NAME = process.env.CUSTOMER_NAME || "";
+// 追问生成的等待上限。超了就用固定句——冷场已经够久，不能再干等 LLM
+const NUDGE_TIMEOUT_MS = Number(process.env.NUDGE_TIMEOUT_MS || 1500);
 
 // ---------------- 启动前检查 ----------------
 
@@ -245,6 +250,8 @@ function onClient(client, req) {
     greetDelayMs: GREET_DELAY_MS,
     idleNudgeMs: IDLE_NUDGE_MS,
     idleByeMs: IDLE_BYE_MS,
+    customerName: CUSTOMER_NAME,
+    nudgeTimeoutMs: NUDGE_TIMEOUT_MS,
   });
 
   let closed = false;
