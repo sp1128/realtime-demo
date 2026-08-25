@@ -155,6 +155,15 @@
       </label>
       <div id="customVoiceRow" class="voice-row" style="display: none;">
         <input id="customVoiceId" placeholder="复刻音色 ID，通常是 S_ 开头" style="flex: 1;" />
+        <select id="customVoiceRes" style="flex-shrink: 0;">
+          <option value="seed-icl-2.0">复刻 2.0</option>
+          <option value="seed-icl-1.0">复刻 1.0 字符版</option>
+          <option value="seed-icl-1.0-concurr">复刻 1.0 并发版</option>
+        </select>
+        <input id="customVoiceModel" list="modelOptions" placeholder="model 档位（留空即可）" style="width: 168px; flex-shrink: 0;" />
+        <datalist id="modelOptions">
+          <option value="seed-tts-2.0-standard"></option>
+        </datalist>
       </div>
       <div id="customVoiceHint" class="hint"></div>
     </div>
@@ -904,9 +913,13 @@ voiceDemoBtn.addEventListener("click", async () => {
 const useCustomVoice = document.getElementById("useCustomVoice");
 const customVoiceRow = document.getElementById("customVoiceRow");
 const customVoiceId = document.getElementById("customVoiceId");
+const customVoiceRes = document.getElementById("customVoiceRes");
+const customVoiceModel = document.getElementById("customVoiceModel");
 const customVoiceHint = document.getElementById("customVoiceHint");
 const CUSTOM_KEY = "realtime-demo.customSpeaker";
 const CUSTOM_ON_KEY = "realtime-demo.customSpeakerOn";
+const CUSTOM_RES_KEY = "realtime-demo.customResource";
+const CUSTOM_MODEL_KEY = "realtime-demo.customModel";
 
 function syncCustomVoice() {
   const on = useCustomVoice.checked;
@@ -914,18 +927,28 @@ function syncCustomVoice() {
   voiceSelect.disabled = on || running;
   voiceFilter.disabled = on || running;
   voiceDemoBtn.disabled = on;
+  // 复刻 1.0 还是 2.0 靠资源号决定，不是靠 model 字段。
+  // 实测把资源号填进 model 会直接 45000001 InvalidModel，这里特意提一句
   customVoiceHint.textContent = on
-    ? "会用 seed-icl-2.0 资源号。没开通「豆包声音复刻模型2.0」的话连接会报 403"
+    ? `资源号 ${customVoiceRes.value}｜没开通对应的复刻服务会直接 403。` +
+      "model 建议留空（实测只有 seed-tts-2.0-standard 合法，" +
+      "把资源号填进 model 会报 InvalidModel）"
     : "";
   localStorage.setItem(CUSTOM_ON_KEY, on ? "1" : "");
   localStorage.setItem(CUSTOM_KEY, customVoiceId.value.trim());
+  localStorage.setItem(CUSTOM_RES_KEY, customVoiceRes.value);
+  localStorage.setItem(CUSTOM_MODEL_KEY, customVoiceModel.value.trim());
 }
 
 useCustomVoice.addEventListener("change", syncCustomVoice);
 customVoiceId.addEventListener("input", syncCustomVoice);
+customVoiceRes.addEventListener("change", syncCustomVoice);
+customVoiceModel.addEventListener("input", syncCustomVoice);
 
 // 页面重开时把上次填的恢复回来
 customVoiceId.value = localStorage.getItem(CUSTOM_KEY) || "";
+customVoiceRes.value = localStorage.getItem(CUSTOM_RES_KEY) || "seed-icl-2.0";
+customVoiceModel.value = localStorage.getItem(CUSTOM_MODEL_KEY) || "";
 useCustomVoice.checked = !!localStorage.getItem(CUSTOM_ON_KEY);
 syncCustomVoice();
 
@@ -933,10 +956,15 @@ syncCustomVoice();
 function chosenVoice() {
   if (useCustomVoice.checked) {
     const id = customVoiceId.value.trim();
-    return id ? { speaker: id, resource: "seed-icl-2.0" } : null;
+    if (!id) return null;
+    return {
+      speaker: id,
+      resource: customVoiceRes.value,
+      model: customVoiceModel.value.trim(),
+    };
   }
   return voiceSelect && voiceSelect.value
-    ? { speaker: voiceSelect.value, resource: "seed-tts-2.0" }
+    ? { speaker: voiceSelect.value, resource: "seed-tts-2.0", model: "" }
     : null;
 }
 
@@ -981,7 +1009,9 @@ function relayUrl() {
   const base = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
   const v = chosenVoice();
   if (!v) return base;
-  return `${base}?speaker=${encodeURIComponent(v.speaker)}&resource=${encodeURIComponent(v.resource)}`;
+  let u = `${base}?speaker=${encodeURIComponent(v.speaker)}&resource=${encodeURIComponent(v.resource)}`;
+  if (v.model) u += `&model=${encodeURIComponent(v.model)}`;
+  return u;
 }
 
 async function start() {
@@ -1040,6 +1070,8 @@ async function start() {
     voiceFilter.disabled = true;
     useCustomVoice.disabled = true;
     customVoiceId.disabled = true;
+    customVoiceRes.disabled = true;
+    customVoiceModel.disabled = true;
 
     setStatus("正在连接本地中转...");
     await connectRelay();
@@ -1316,6 +1348,8 @@ function stop() {
 
   useCustomVoice.disabled = false;
   customVoiceId.disabled = false;
+  customVoiceRes.disabled = false;
+  customVoiceModel.disabled = false;
   syncCustomVoice(); // 由它决定下拉框到底该不该恢复可用
 
   setStatus("已断开");

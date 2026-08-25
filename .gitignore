@@ -1,6 +1,10 @@
-.node_modules
-dist
-dist-ssr
+node_modules/
+
+# 注意别写成没有斜杠的 dist：那样会匹配任意层级的 dist 目录，
+# 包括 node_modules/*/dist。之前就是这条把依赖里的 dist 全排除了，
+# 导致仓库里的 tsyringe 缺 dist/cjs/index.js，一 checkout 就起不来。
+/dist
+/dist-ssr
 *.local
 .DS_Store
 .vscode/*

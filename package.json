@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preinstall": "node scripts/only-npm.mjs",
     "start": "node server.js",
     "dev": "node --watch server.js",
     "check-proxy": "node check-proxy.mjs"
@@ -14,5 +15,8 @@
     "https-proxy-agent": "^9.1.0",
     "selfsigned": "^5.5.0",
     "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

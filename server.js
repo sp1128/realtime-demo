@@ -63,8 +63,16 @@ const TTS_RESOURCE_ID = process.env.VOLC_TTS_RESOURCE_ID || "seed-tts-2.0";
 const ALLOWED_TTS_RESOURCES = new Set([
   "seed-tts-2.0", // 官方精品音色
   "seed-icl-2.0", // 声音复刻 2.0，需要单独开通
+  "seed-icl-1.0", // 声音复刻 1.0 字符版
+  "seed-icl-1.0-concurr", // 声音复刻 1.0 并发版
   "volc.service_type.10029", // 1.0 时代的号，留个后路
 ]);
+
+// 合成模型档位，对应 req_params.model。留空就不发这个字段，用服务端默认值。
+// 实测只有 seed-tts-2.0-standard 合法，其它写法一律 45000001 InvalidModel。
+//
+// 别拿它切复刻版本——那是上面的资源号决定的，填错直接 InvalidModel
+const TTS_MODEL = process.env.VOLC_TTS_MODEL || "";
 
 // 音色 ID，在火山控制台「音色详情」里复制。
 // 音色和模型版本是绑死的：_uranus_bigtts / saturn_ 开头的是 2.0 音色，
@@ -106,6 +114,9 @@ const COMMIT_DELAY_MS = Number(process.env.COMMIT_DELAY_MS || 180);
 // 确认式打断：VAD 响了之后，最多等多久去确认"真有人在说话"
 const BARGE_CONFIRM_MS = Number(process.env.BARGE_CONFIRM_MS || 1000);
 const BARGE_MIN_CHARS = Number(process.env.BARGE_MIN_CHARS || 2);
+// 短于这个长度的转写不做回声比对，一律当成客户真在说话。
+// 选择题抢答（「期货」「股票」）就长在 AI 正念的那句里，一比对就被吃掉
+const BARGE_ECHO_MIN_CHARS = Number(process.env.BARGE_ECHO_MIN_CHARS || 5);
 // ASR 内部静音多久定稿。跟 VAD 对齐，提交时二遍识别的结果才赶得上
 const ASR_END_WINDOW_MS = Number(process.env.ASR_END_WINDOW_MS || 400);
 
@@ -146,8 +157,10 @@ function explain(msg, ttsResource) {
   const s = String(msg);
   if (/401|Unauthorized/.test(s))
     return `${s}｜鉴权被拒：DeepSeek 看 DEEPSEEK_API_KEY，火山看 VOLC_APP_ID / VOLC_ACCESS_TOKEN`;
-  if (/403/.test(s) && ttsResource === "seed-icl-2.0")
-    return `${s}｜复刻音色用不了：这个账号没开通「豆包声音复刻模型2.0」。去 console.volcengine.com/speech/app 开通并复刻出音色后再用，音色 ID 通常是 S_ 开头`;
+  // 复刻的资源号有好几个（seed-icl-2.0 / 1.0 / 1.0-concurr），一律按"没开通复刻"解释。
+  // 用复刻音色时 403 十有八九是这个原因，而不是 .env 里的号填错了
+  if (/403/.test(s) && /^seed-icl/.test(ttsResource || ""))
+    return `${s}｜复刻音色用不了：这个账号没开通「豆包声音复刻模型」（当前用的资源号 ${ttsResource}）。去 console.volcengine.com/speech/app 开通并复刻出音色后再用，音色 ID 通常是 S_ 开头`;
   if (/403/.test(s))
     return `${s}｜没有权限：火山那边多半是资源号跟实际开通的套餐对不上，检查 VOLC_ASR_RESOURCE_ID / VOLC_TTS_RESOURCE_ID`;
   if (/ETIMEDOUT|ENOTFOUND|ECONNREFUSED|ECONNRESET/.test(s))
@@ -167,6 +180,7 @@ function onClient(client, req) {
   // 白名单校验：这个值会直接进到发给火山的请求里，不能让页面随便塞东西
   let speaker = TTS_SPEAKER;
   let ttsResource = TTS_RESOURCE_ID;
+  let ttsModel = TTS_MODEL;
   try {
     const qs = new URL(req.url, "http://localhost").searchParams;
     const q = qs.get("speaker");
@@ -177,10 +191,15 @@ function onClient(client, req) {
     const r = qs.get("resource");
     if (r && ALLOWED_TTS_RESOURCES.has(r)) ttsResource = r;
     else if (r) console.warn(`${tag} 资源号不在白名单里，已忽略: ${r.slice(0, 40)}`);
+
+    const m = qs.get("model");
+    if (m && /^[A-Za-z0-9._-]{1,64}$/.test(m)) ttsModel = m;
+    else if (m) console.warn(`${tag} 模型档位不合法，已忽略: ${m.slice(0, 40)}`);
   } catch (e) {}
 
   console.log(
-    `${tag} 浏览器已接入（音色 ${speaker} / ${ttsResource}），正在连接火山 ASR / TTS…`,
+    `${tag} 浏览器已接入（音色 ${speaker} / ${ttsResource}` +
+      `${ttsModel ? " / " + ttsModel : ""}），正在连接火山 ASR / TTS…`,
   );
 
   const send = (obj) => {
@@ -193,6 +212,7 @@ function onClient(client, req) {
     volcToken: VOLC_ACCESS_TOKEN,
     asrResourceId: ASR_RESOURCE_ID,
     ttsResourceId: ttsResource,
+    ttsModel,
     speaker,
     speechRate: TTS_SPEECH_RATE,
     hotwords: HOTWORDS,
@@ -208,6 +228,7 @@ function onClient(client, req) {
     commitDelayMs: COMMIT_DELAY_MS,
     bargeConfirmMs: BARGE_CONFIRM_MS,
     bargeMinChars: BARGE_MIN_CHARS,
+    bargeEchoMinChars: BARGE_ECHO_MIN_CHARS,
     asrEndWindowMs: ASR_END_WINDOW_MS,
     autoGreet: AUTO_GREET,
     greetDelayMs: GREET_DELAY_MS,
@@ -232,6 +253,7 @@ function onClient(client, req) {
       model: LLM_MODEL,
       speaker,
       ttsResource,
+      ttsModel,
       proxy: PROXY_URL || null,
     });
   });
