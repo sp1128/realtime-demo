@@ -163,6 +163,12 @@ const NUDGE_TIMEOUT_MS = Number(process.env.NUDGE_TIMEOUT_MS || 1500);
 // 真要用得垫满整个等待窗口，那就成了每轮都说的口头禅。留着开关但默认不开
 const FILLER_MS = Number(process.env.FILLER_MS || 0);
 
+// 把每次发给火山 TTS 的请求参数打到服务端控制台。
+// StartSession 打完整 req_params（additions 已还原成对象，不是转义字符串），
+// TaskRequest 打送进去的文本。排查音色/韵律问题时要看的就是这些。
+// 嫌刷屏就设 TTS_LOG_REQUEST=false
+const TTS_LOG_REQUEST = process.env.TTS_LOG_REQUEST !== "false";
+
 // ---------------- 启动前检查 ----------------
 
 const missing = [];
@@ -325,6 +331,20 @@ function onClient(client, req) {
   session.on("playback.flush", () => send({ type: "playback.flush" }));
   session.on("tts.drain", () => send({ type: "tts.drain" }));
   session.on("log", (text) => send({ type: "log", text }));
+  if (TTS_LOG_REQUEST) {
+    session.on("tts.request", (r) => {
+      const head = `${tag} ▶ TTS ${r.type}`;
+      if (r.type === "StartSession") {
+        console.log(`${head}  session=${r.sessionId}  resource=${r.resourceId}`);
+        console.log(JSON.stringify(r.params, null, 2));
+      } else if (r.params && r.params.text !== undefined) {
+        console.log(`${head}  text=${JSON.stringify(r.params.text)}`);
+      } else {
+        console.log(`${head}  session=${r.sessionId}`);
+      }
+    });
+  }
+
   session.on("hangup", () => {
     console.log(`${tag} 通话结束（对方一直没接话）`);
     send({ type: "hangup" });
