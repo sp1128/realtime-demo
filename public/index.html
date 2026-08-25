@@ -142,6 +142,12 @@
   </div>
 
   <div style="margin-bottom: 12px;">
+    <label>对方称呼（每次拨号前填，AI 开场会这样称呼他）：</label><br/>
+    <input id="calleeName" placeholder="例：叶升辉先生 / 王女士 / 李经理" style="width: 100%; box-sizing: border-box;" />
+    <div id="calleeHint" class="hint"></div>
+  </div>
+
+  <div style="margin-bottom: 12px;">
     <label>AI 音色（通话中不能改，要改先挂断）：</label><br/>
     <div class="voice-row">
       <input id="voiceFilter" placeholder="筛选：打 男 / 女 / 沉稳 / 客服 …" />
@@ -761,6 +767,26 @@ function stopMeters() {
 // 选中的音色不走 .env，而是在建连时挂在 WebSocket 的 query 上传给服务端——
 // 因为 CallSession 在连接建立那一刻就要拿着音色把 TTS 会话开出去，
 // 连上以后再发消息就晚了，第一句已经用默认音色念出去了。
+// 对方称呼。整段会被拼进提示词的开场示例里，所以拨号前必须填——
+// 不填的话 AI 会用提示词里的默认姓名，真实外呼里叫错名字是致命的
+const calleeName = document.getElementById("calleeName");
+const calleeHint = document.getElementById("calleeHint");
+const CALLEE_KEY = "realtime-demo.callee";
+
+function calleeOk() {
+  return /^[一-龥A-Za-z·]{2,20}$/.test(calleeName.value.trim());
+}
+function syncCallee() {
+  const v = calleeName.value.trim();
+  localStorage.setItem(CALLEE_KEY, v);
+  if (!v) calleeHint.textContent = "拨号前必须填，AI 开场要用这个称呼";
+  else if (!calleeOk()) calleeHint.textContent = "只能是 2~20 个中文或字母";
+  else calleeHint.textContent = `开场会说「请问是${v}吗？」`;
+  startBtn.disabled = running || !calleeOk();
+}
+calleeName.value = localStorage.getItem(CALLEE_KEY) || "";
+calleeName.addEventListener("input", syncCallee);
+
 const voiceSelect = document.getElementById("voiceSelect");
 const voiceFilter = document.getElementById("voiceFilter");
 const voiceDemoBtn = document.getElementById("voiceDemoBtn");
@@ -971,6 +997,7 @@ function chosenVoice() {
 }
 
 loadVoices();
+syncCallee();
 
 
 async function listDevices() {
@@ -1013,11 +1040,19 @@ function relayUrl() {
   if (!v) return base;
   let u = `${base}?speaker=${encodeURIComponent(v.speaker)}&resource=${encodeURIComponent(v.resource)}`;
   if (v.model) u += `&model=${encodeURIComponent(v.model)}`;
+  const nm = calleeName.value.trim();
+  if (nm) u += `&name=${encodeURIComponent(nm)}`;
   return u;
 }
 
 async function start() {
+  if (!calleeOk()) {
+    log("❌ 先填对方称呼再拨号——AI 开场要用它，填错名字比不打还糟", "msg-sys");
+    calleeName.focus();
+    return;
+  }
   startBtn.disabled = true;
+  calleeName.disabled = true;
   callStartedAt = Date.now();
   sentBytes = 0;
   recvAudioBytes = 0;
@@ -1204,7 +1239,8 @@ function handleEvent(evt) {
       running = true;
       stopBtn.disabled = false;
       log(
-        `✅ 链路已打通：火山ASR → ${evt.model} → 火山TTS(${voiceName(evt.speaker)}` +
+        `✅ 链路已打通${evt.customerName ? `（称呼「${evt.customerName}」）` : ""}：` +
+          `火山ASR → ${evt.model} → 火山TTS(${voiceName(evt.speaker)}` +
           `${evt.ttsResource === "seed-icl-2.0" ? "，复刻音色" : ""})` +
           (evt.proxy ? `，LLM 经代理 ${evt.proxy}` : "，LLM 直连") +
           (relayStartedAt ? `，耗时 ${(performance.now() - relayStartedAt).toFixed(0)}ms` : ""),
@@ -1356,6 +1392,7 @@ function stop() {
     audioCtx = null;
   }
 
+  calleeName.disabled = false;
   useCustomVoice.disabled = false;
   customVoiceId.disabled = false;
   customVoiceRes.disabled = false;
@@ -1363,7 +1400,7 @@ function stop() {
   syncCustomVoice(); // 由它决定下拉框到底该不该恢复可用
 
   setStatus("已断开");
-  startBtn.disabled = false;
+  startBtn.disabled = !calleeOk();
   stopBtn.disabled = true;
 }
 

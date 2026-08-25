@@ -135,8 +135,8 @@ const GREET_DELAY_MS = Number(process.env.GREET_DELAY_MS || 400);
 // 嫌它催得急就把 IDLE_NUDGE_MS 往回调
 const IDLE_NUDGE_MS = Number(process.env.IDLE_NUDGE_MS || 4000);
 const IDLE_BYE_MS = Number(process.env.IDLE_BYE_MS || 10000);
-// 客户的称呼，用在"开场没人应"时那句"喂，X先生，能听到吗"。
-// 不填就从 AI 自己说过的开场白里抠（提示词里写的是"请问是叶升辉先生吗"）
+// 对方称呼的兜底值。正常情况下由页面在拨号前填，通过 WebSocket 参数传上来；
+// 这里只是没传时的默认，也方便不带界面的场景用
 const CUSTOMER_NAME = process.env.CUSTOMER_NAME || "";
 // 追问生成的等待上限。超了就用固定句——冷场已经够久，不能再干等 LLM
 const NUDGE_TIMEOUT_MS = Number(process.env.NUDGE_TIMEOUT_MS || 1500);
@@ -195,6 +195,7 @@ function onClient(client, req) {
   let speaker = TTS_SPEAKER;
   let ttsResource = TTS_RESOURCE_ID;
   let ttsModel = TTS_MODEL;
+  let customerName = CUSTOMER_NAME;
   try {
     const qs = new URL(req.url, "http://localhost").searchParams;
     const q = qs.get("speaker");
@@ -209,10 +210,15 @@ function onClient(client, req) {
     const m = qs.get("model");
     if (m && /^[A-Za-z0-9._-]{1,64}$/.test(m)) ttsModel = m;
     else if (m) console.warn(`${tag} 模型档位不合法，已忽略: ${m.slice(0, 40)}`);
+
+    // 对方称呼。会被拼进提示词，所以限制字符集和长度，别让页面塞进整段指令
+    const nm = (qs.get("name") || "").trim();
+    if (nm && /^[一-龥A-Za-z·]{2,20}$/.test(nm)) customerName = nm;
+    else if (nm) console.warn(`${tag} 称呼不合法，已忽略: ${nm.slice(0, 40)}`);
   } catch (e) {}
 
   console.log(
-    `${tag} 浏览器已接入（音色 ${speaker} / ${ttsResource}` +
+    `${tag} 浏览器已接入（${customerName || "未填称呼"}｜音色 ${speaker} / ${ttsResource}` +
       `${ttsModel ? " / " + ttsModel : ""}），正在连接火山 ASR / TTS…`,
   );
 
@@ -250,7 +256,7 @@ function onClient(client, req) {
     greetDelayMs: GREET_DELAY_MS,
     idleNudgeMs: IDLE_NUDGE_MS,
     idleByeMs: IDLE_BYE_MS,
-    customerName: CUSTOMER_NAME,
+    customerName,
     nudgeTimeoutMs: NUDGE_TIMEOUT_MS,
   });
 
@@ -272,6 +278,7 @@ function onClient(client, req) {
       speaker,
       ttsResource,
       ttsModel,
+      customerName,
       proxy: PROXY_URL || null,
     });
   });
