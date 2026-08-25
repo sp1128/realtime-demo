@@ -249,7 +249,7 @@ const SAMPLE_RATE = 24000;
 const CHUNK_SAMPLES = 480;
 // 播放侧的抖动缓冲：收到的音频统一往后推这么多毫秒再播。
 // 走代理时到达节奏不均匀，垫这一层能把断续磨平，代价是听感延迟增加同等数值。
-const PLAY_LEAD_MS = 140;
+const PLAY_LEAD_MS = 90;
 
 // 开场白由服务端触发（AUTO_GREET / GREET_DELAY_MS 在 .env 里），这边不管。
 // 谁先开口属于对话逻辑，跟播放无关，放在服务端才不会两头各有一套判断。

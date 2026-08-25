@@ -106,11 +106,11 @@ const HISTORY_TURNS = Number(process.env.HISTORY_TURNS || 12);
 
 // ---- 轮次与打断的旋钮 ----
 // 静音多久算客户说完。小了客户喘口气就被抢白，大了接话发木
-const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 380);
+const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 300);
 // 判定"有人在说话"需要超过噪声底的多少倍。环境嘈杂往上调（3.5~5）
 const VAD_RATIO = Number(process.env.VAD_RATIO || 2.6);
 // 静音之后再等一下再提交，让 ASR 的最后一段结果落地，否则会丢掉最后两三个字
-const COMMIT_DELAY_MS = Number(process.env.COMMIT_DELAY_MS || 180);
+const COMMIT_DELAY_MS = Number(process.env.COMMIT_DELAY_MS || 150);
 // 确认式打断：VAD 响了之后，最多等多久去确认"真有人在说话"
 const BARGE_CONFIRM_MS = Number(process.env.BARGE_CONFIRM_MS || 1000);
 const BARGE_MIN_CHARS = Number(process.env.BARGE_MIN_CHARS || 2);
@@ -140,6 +140,16 @@ const IDLE_BYE_MS = Number(process.env.IDLE_BYE_MS || 10000);
 const CUSTOMER_NAME = process.env.CUSTOMER_NAME || "";
 // 追问生成的等待上限。超了就用固定句——冷场已经够久，不能再干等 LLM
 const NUDGE_TIMEOUT_MS = Number(process.env.NUDGE_TIMEOUT_MS || 1500);
+// LLM 超过这么久还没吐第一个字就先垫半个字。**默认关闭**。
+//
+// 想法是用垫话盖住 LLM 的等待，实测行不通：火山 TTS 不足 5 个字不开始合成，
+// 所以「嗯，」这种短垫话自己就要卡到正文到达才出声，等于没垫。
+// 就算改用够长的垫话（≥6 字，能立刻合成），它的音频只有 1.5 秒左右，
+// 播完到正文到达之间仍有几百毫秒空白，听感是"嗯，……（停顿）……正文"，
+// 比直接等还难受。
+//
+// 真要用得垫满整个等待窗口，那就成了每轮都说的口头禅。留着开关但默认不开
+const FILLER_MS = Number(process.env.FILLER_MS || 0);
 
 // ---------------- 启动前检查 ----------------
 
@@ -258,6 +268,7 @@ function onClient(client, req) {
     idleByeMs: IDLE_BYE_MS,
     customerName,
     nudgeTimeoutMs: NUDGE_TIMEOUT_MS,
+    fillerMs: FILLER_MS,
   });
 
   let closed = false;
