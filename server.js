@@ -127,8 +127,10 @@ const ASR_END_WINDOW_MS = Number(process.env.ASR_END_WINDOW_MS || 400);
 // 接通后由 AI 先开口（外呼场景需要），false 则等客户先说话
 const AUTO_GREET = process.env.AUTO_GREET !== "false";
 const GREET_DELAY_MS = Number(process.env.GREET_DELAY_MS || 400);
-// 说完后客户一直不接话：先追问，再还不说话就道别收线
-const IDLE_NUDGE_MS = Number(process.env.IDLE_NUDGE_MS || 8000);
+// 说完后客户一直不接话：先追问，再还不说话就道别收线。
+// 追问 4 秒是偏积极的：真人打电话时对方想两三秒很正常，
+// 嫌它催得急就把 IDLE_NUDGE_MS 往回调
+const IDLE_NUDGE_MS = Number(process.env.IDLE_NUDGE_MS || 4000);
 const IDLE_BYE_MS = Number(process.env.IDLE_BYE_MS || 10000);
 
 // ---------------- 启动前检查 ----------------
