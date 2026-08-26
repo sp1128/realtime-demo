@@ -811,6 +811,7 @@ const AMB_NAMES = ["办公室", "咖啡馆", "街边", "车里"];
 
 let ambCtxNodes = [];   // 当前 profile 建出来的节点，切换时要逐个停掉
 let ambVol = null;      // 音量（滑块）
+let ambLimiter = null;  // 末端限幅，防止拉满时削顶
 let ambFade = null;     // 开关（淡入淡出），AI 说话时才抬起来
 let ambDest = null;
 let ambAudioEl = null;
@@ -916,8 +917,18 @@ async function ambEnsure() {
   band.frequency.value = 3400;
   ambFade.connect(band);
   band.connect(ambVol);
+  // 末端限幅，纯粹兜底。滑块拉满时咖啡馆那段（配平 ×2.69）峰值会顶到
+  // 0 dBFS 附近，直接削顶会有很难听的破音。阈值定在 -6dB，
+  // 正常音量下压根不工作
+  ambLimiter = ctx.createDynamicsCompressor();
+  ambLimiter.threshold.value = -6;
+  ambLimiter.knee.value = 0;
+  ambLimiter.ratio.value = 20;
+  ambLimiter.attack.value = 0.003;
+  ambLimiter.release.value = 0.25;
+  ambVol.connect(ambLimiter);
   ambDest = ctx.createMediaStreamDestination();
-  ambVol.connect(ambDest);
+  ambLimiter.connect(ambDest);
   ambAudioEl = new Audio();
   ambAudioEl.srcObject = ambDest.stream;
   ambAudioEl.autoplay = true;
@@ -990,7 +1001,7 @@ function ambShutdown() {
       ambAudioEl.srcObject = null;
     } catch (e) {}
   }
-  for (const n of [ambVol, ambFade]) {
+  for (const n of [ambVol, ambFade, ambLimiter]) {
     try {
       if (n) n.disconnect();
     } catch (e) {}
@@ -998,6 +1009,7 @@ function ambShutdown() {
   ambDest = null;
   ambVol = null;
   ambFade = null;
+  ambLimiter = null;
   ambAudioEl = null;
 }
 
@@ -1033,14 +1045,24 @@ async function ambRoute() {
   }
 }
 
-// 滑块 0–100 映射到 0–0.65，默认 35% 大约是 -44 dBFS。
+// 滑块走 dB，不走线性幅度。线性刻度的问题是刻度不均匀：低端拖一格差好几 dB，
+// 高端拖半条几乎听不出变化——最早那版上限 0.65（约 -35 dBFS）拉满了还嫌轻，
+// 就是这么来的。
 //
-// 上限压得低是有实测依据的：AI 说话时的有声 RMS，中文音色 -20.5 dBFS，
-// 英文音色只有 -33.3 dBFS——英文本身就比中文轻 13dB。环境音只能按更轻的
-// 那头定，不然中文听着刚好的音量，换到英文就盖过 AI 了。
-// 嫌轻就往上推滑块，反正只影响本地
+// 0 = 静音；1–100 线性映射到 AMB_DB_MIN–AMB_DB_MAX，相对配平基准（增益 1.0，
+// 实测输出 -31 dBFS 上下）。
+//
+// 上限给到 +11dB（约 -20 dBFS）是故意留过头的：中文音色说话时的有声 RMS
+// 是 -20.5 dBFS，拉满时环境音基本跟 AI 一样响，正常绝对用不到；
+// 但宁可留着不用，也别再出现"拉到头还是不够"。
+// 英文音色本身比中文轻 13dB（-33.3 dBFS），用英文时同样的刻度会显得更响，
+// 换语种后可能要往回收一点
+const AMB_DB_MIN = -20;
+const AMB_DB_MAX = 11;
 function ambLevel() {
-  return (Number(ambVolInput.value) / 100) * 0.65;
+  const v = Number(ambVolInput.value);
+  if (v <= 0) return 0;
+  return Math.pow(10, (AMB_DB_MIN + ((AMB_DB_MAX - AMB_DB_MIN) * v) / 100) / 20);
 }
 
 // 开关判据用"播放队列里还有没有排着的音频"，不用 state=SPEAKING：
