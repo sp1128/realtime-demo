@@ -229,6 +229,7 @@ function onClient(client, req) {
   // 白名单校验：这个值会直接进到发给火山的请求里，不能让页面随便塞东西
   let speaker = TTS_SPEAKER;
   let speakerFromQuery = false;
+  let nameRejected = "";
   let ttsResource = TTS_RESOURCE_ID;
   let ttsModel = TTS_MODEL;
   let customerName = CUSTOMER_NAME;
@@ -254,9 +255,19 @@ function onClient(client, req) {
     const lg = qs.get("lang");
     if (lg === "en" || lg === "zh") lang = lg;
 
+    // 字符集按语种分开，跟页面的 calleeOk() 保持一致：
+    // 英文称呼带空格和点（Mr. Ye），拿中文那套规则去卡会全军覆没，
+    // 结果是静默回落到提示词里的默认名，界面上一点异常都看不出来
     const nm = (qs.get("name") || "").trim();
-    if (nm && /^[一-龥A-Za-z·]{2,20}$/.test(nm)) customerName = nm;
-    else if (nm) console.warn(`${tag} 称呼不合法，已忽略: ${nm.slice(0, 40)}`);
+    const nameOk =
+      lang === "en"
+        ? /^[A-Za-z][A-Za-z.\-' ]{1,39}$/.test(nm)
+        : /^[一-龥A-Za-z·]{2,20}$/.test(nm);
+    if (nm && nameOk) customerName = nm;
+    else if (nm) {
+      nameRejected = nm;
+      console.warn(`${tag} 称呼不合法，已忽略: ${nm.slice(0, 40)}`);
+    }
   } catch (e) {}
 
   console.log(
@@ -328,6 +339,7 @@ function onClient(client, req) {
       ttsResource,
       ttsModel,
       customerName,
+      nameRejected,
       lang,
       proxy: PROXY_URL || null,
     });

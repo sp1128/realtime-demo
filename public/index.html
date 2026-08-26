@@ -1317,6 +1317,12 @@ function handleEvent(evt) {
           (relayStartedAt ? `，耗时 ${(performance.now() - relayStartedAt).toFixed(0)}ms` : ""),
         "msg-sys"
       );
+      if (evt.nameRejected) {
+        log(
+          `⚠️ 服务端不认这个称呼「${evt.nameRejected}」，这通会用提示词里的默认名`,
+          "msg-sys",
+        );
+      }
       setStatus("已连接，等待对方说话 🎧");
       startStatsProbe();
       break;
