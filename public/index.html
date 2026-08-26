@@ -926,8 +926,12 @@ async function ambEnsure() {
 
 function ambTeardown() {
   for (const n of ambCtxNodes) {
+    // 两个动作分开 try。写在同一个 try 里的话，stop() 一抛异常就跳过了
+    // disconnect()，节点还挂在图上，等于没停
     try {
       if (typeof n.stop === "function") n.stop();
+    } catch (e) {}
+    try {
       if (typeof n.disconnect === "function") n.disconnect();
     } catch (e) {}
   }
@@ -975,6 +979,22 @@ async function ambStart(name) {
 // 往一个已经关掉的 context 上接节点，不报错但没声音
 function ambShutdown() {
   ambStop();
+  // 顺序不能反：先把 <audio> 和 MediaStream 拆干净，再丢引用。
+  // 只置空引用的话，元素还在播那条流，而且再也没人能停它了——
+  // 一直"卡顿"到刷新页面为止
+  if (ambAudioEl) {
+    try {
+      ambAudioEl.pause();
+      const st = ambAudioEl.srcObject;
+      if (st) for (const t of st.getTracks()) t.stop();
+      ambAudioEl.srcObject = null;
+    } catch (e) {}
+  }
+  for (const n of [ambVol, ambFade]) {
+    try {
+      if (n) n.disconnect();
+    } catch (e) {}
+  }
   ambDest = null;
   ambVol = null;
   ambFade = null;
@@ -990,6 +1010,14 @@ function ambStop() {
   if (ambFade) ambFade.gain.value = 0;
   clearInterval(ambTimer);
   ambTimer = null;
+  // 图停了还得把 <audio> 停掉。只断开节点的话元素仍在播那条 MediaStream，
+  // 喂不到采样就一直重复最后一段，听着就是"卡顿"。
+  // 元素留着复用，下次 ambStart 再 play()
+  if (ambAudioEl) {
+    try {
+      ambAudioEl.pause();
+    } catch (e) {}
+  }
 }
 
 // 跟 AI 声音走同一个输出设备，不然环境音从扬声器出、AI 从 CABLE 出，
