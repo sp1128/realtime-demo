@@ -182,6 +182,26 @@
     </div>
   </div>
 
+  <div style="margin-bottom: 12px;">
+    <label>通话环境音（每通随机抽一个，垫在 AI 声音后面）：</label><br/>
+    <div class="voice-row">
+      <select id="ambProfile" style="flex-shrink: 0;">
+        <option value="random">随机（每通不一样）</option>
+        <option value="off">关闭</option>
+        <option value="办公室">办公室</option>
+        <option value="咖啡馆">咖啡馆</option>
+        <option value="街边">街边</option>
+        <option value="车里">车里</option>
+      </select>
+      <input type="range" id="ambVol" min="0" max="100" value="35" style="flex: 1;" />
+      <button id="ambDemoBtn" class="mini">▶ 试听</button>
+    </div>
+    <label style="font-size: 13px; color: #999;">
+      <input type="checkbox" id="ambAlways" /> 全程播放（不勾就只在 AI 说话时）
+    </label>
+    <div id="ambHint" class="hint"></div>
+  </div>
+
   <button id="startBtn">开始通话</button>
   <button id="stopBtn" disabled>结束通话</button>
   <button id="testBtn" style="background: #3b82f6; color: #0b1220;">🔊 测试输出</button>
@@ -769,6 +789,309 @@ function stopMeters() {
   ["remoteDot", "aiDot"].forEach((id) => document.getElementById(id).classList.remove("on"));
 }
 
+// ================= 通话环境音 =================
+// 真实的电话背景不是干净的：办公室有空调、咖啡馆有人声、街边有车流。
+// 全干净反而不像真人打来的。
+//
+// 素材是 CC0 的实地录音（public/ambience/，出处见那边的 来源.md），
+// 每通电话随机抽一段。
+//
+// 电话线是窄带（约 300–3400Hz），所以整条链末端统一低通到 3.4k：
+// 再高的部分对方根本听不到，留着只是白白多一层嘶声。
+const AMB_KEY = "realtime-demo.amb";
+const AMB_VOL_KEY = "realtime-demo.ambVol";
+const AMB_ALWAYS_KEY = "realtime-demo.ambAlways";
+const ambProfileSel = document.getElementById("ambProfile");
+const ambVolInput = document.getElementById("ambVol");
+const ambAlwaysBox = document.getElementById("ambAlways");
+const ambDemoBtn = document.getElementById("ambDemoBtn");
+const ambHint = document.getElementById("ambHint");
+
+const AMB_NAMES = ["办公室", "咖啡馆", "街边", "车里"];
+
+let ambCtxNodes = [];   // 当前 profile 建出来的节点，切换时要逐个停掉
+let ambVol = null;      // 音量（滑块）
+let ambFade = null;     // 开关（淡入淡出），AI 说话时才抬起来
+let ambDest = null;
+let ambAudioEl = null;
+let ambCurrent = "";    // 这通实际抽中的
+let ambTimer = null;
+let ambSpokeAt = 0;
+
+// 素材：public/ambience/*.mp3，都是 CC0 的实地录音，出处见同目录的 来源.md。
+// 取的是 64kbps 预览版——环境音在通话里只有 -44 dBFS 上下，末端还要低通到
+// 3.4kHz，再高的码率纯粹是白占仓库体积。
+//
+// trim 是配平系数：四段素材本身响度差了 9dB，不拉平的话"随机"就变成
+// 每通电话背景音大小都不一样，滑块也就没了准头。数值是实测出来的
+// trim 是实测出来的配平系数。四段素材本身的中位响度：
+// 办公室 -31.1、咖啡馆 -39.7、街边 -26.3、车里 -31.1 dBFS，
+// 差了 13dB。不拉平的话"随机"就变成每通电话背景音大小都不一样。
+// 街边额外压了 3dB：它动态大（p10 -31 / p90 -18），车开过去那几下
+// 按中位配平会顶出来
+const AMB_FILES = {
+  办公室: { src: "ambience/office.mp3", trim: 1.0 },
+  咖啡馆: { src: "ambience/cafe.mp3", trim: 2.69 },
+  街边: { src: "ambience/street.mp3", trim: 0.41 },
+  车里: { src: "ambience/car.mp3", trim: 1.0 },
+};
+
+// 缓存编码后的字节，不缓存解码结果：AudioBuffer 是绑在具体 AudioContext 上的，
+// 而每通电话结束都会 close 掉 ctx，留着上一个 ctx 的 buffer 是埋雷。
+// decodeAudioData 会把传进去的 ArrayBuffer 置空，所以每次得切一份新的
+const ambBytes = new Map();
+async function ambLoad(ctx, src) {
+  if (!ambBytes.has(src)) {
+    const r = await fetch(src);
+    if (!r.ok) throw new Error(src + " 取不到（HTTP " + r.status + "）");
+    ambBytes.set(src, new Uint8Array(await r.arrayBuffer()));
+  }
+  const u8 = ambBytes.get(src);
+  return ctx.decodeAudioData(u8.slice().buffer);
+}
+
+// 实地录音不是无缝素材，直接 loop=true 会在接缝处"咔"一下——
+// 环境音本身很轻，但那一下是宽带瞬态，反而听得最清楚。
+// 做法是同一段素材错开 period 播两遍，在接缝处交叉淡入淡出。
+// 曲线用 sqrt 而不是线性：两段是不相关的噪声，等功率才能保证接缝处
+// 总响度不塌下去（线性交叉会在中点掉 3dB）
+const AMB_XFADE = 1.5;
+const AMB_CURVE_N = 33;
+const ambUpCurve = new Float32Array(AMB_CURVE_N);
+const ambDownCurve = new Float32Array(AMB_CURVE_N);
+for (let i = 0; i < AMB_CURVE_N; i++) {
+  const x = i / (AMB_CURVE_N - 1);
+  ambUpCurve[i] = Math.sqrt(x);
+  ambDownCurve[i] = Math.sqrt(1 - x);
+}
+
+function ambLoop(ctx, buf, out, keep) {
+  const dur = buf.duration;
+  const xf = Math.min(AMB_XFADE, dur / 3);
+  const period = Math.max(0.5, dur - xf);
+  let next = ctx.currentTime + 0.08;
+  let stopped = false;
+
+  const spawn = (at) => {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, at);
+    g.gain.setValueCurveAtTime(ambUpCurve, at, xf);
+    g.gain.setValueAtTime(1, at + xf);
+    g.gain.setValueCurveAtTime(ambDownCurve, at + period, xf);
+    src.connect(g);
+    g.connect(out);
+    src.start(at);
+    src.stop(at + dur + 0.05);
+    keep.push(src, g);
+  };
+
+  // 提前 2 秒把下一段排进去。排太早没必要，排太晚会漏一拍、接缝处露出静音
+  const pump = () => {
+    if (stopped) return;
+    while (next < ctx.currentTime + 2) {
+      spawn(next);
+      next += period;
+    }
+  };
+  pump();
+  const t = setInterval(pump, 500);
+  keep.push({ stop: () => { stopped = true; clearInterval(t); } });
+}
+
+// 环境音不接 aiGain，直接自己开一条到输出设备：
+//   1. 接 aiGain 会被音量条算进"AI 音量"，看着像 AI 一直在说话
+//   2. 打断时 stopSources() 会把 aiGain 上挂的源全停掉，环境音会跟着断
+async function ambEnsure() {
+  const ctx = await ensureAudioCtx();
+  if (ambDest) return ctx;
+  ambVol = ctx.createGain();
+  ambVol.gain.value = 0;
+  ambFade = ctx.createGain();
+  ambFade.gain.value = 0;
+  // 电话窄带，3.4k 以上对方本来就听不到，留着只是多一层嘶声
+  const band = ctx.createBiquadFilter();
+  band.type = "lowpass";
+  band.frequency.value = 3400;
+  ambFade.connect(band);
+  band.connect(ambVol);
+  ambDest = ctx.createMediaStreamDestination();
+  ambVol.connect(ambDest);
+  ambAudioEl = new Audio();
+  ambAudioEl.srcObject = ambDest.stream;
+  ambAudioEl.autoplay = true;
+  return ctx;
+}
+
+function ambTeardown() {
+  for (const n of ambCtxNodes) {
+    try {
+      if (typeof n.stop === "function") n.stop();
+      if (typeof n.disconnect === "function") n.disconnect();
+    } catch (e) {}
+  }
+  ambCtxNodes = [];
+}
+
+// 抽一个。选"随机"时每通电话重抽，所以同一个人连打两通听到的背景不一样
+function ambPick() {
+  const want = ambProfileSel.value;
+  if (want === "off") return "";
+  if (want !== "random") return want;
+  return AMB_NAMES[(Math.random() * AMB_NAMES.length) | 0];
+}
+
+async function ambStart(name) {
+  ambStop();
+  const conf = AMB_FILES[name];
+  if (!name || !conf) return;
+  const ctx = await ambEnsure();
+  let buf;
+  try {
+    buf = await ambLoad(ctx, conf.src);
+  } catch (e) {
+    // 素材没了就当没开环境音，别把整通电话拖下水
+    log("⚠️ 环境音素材加载失败，这通不加背景音: " + e.message);
+    return;
+  }
+  ambCurrent = name;
+  const trim = ctx.createGain();
+  trim.gain.value = conf.trim;
+  trim.connect(ambFade);
+  ambCtxNodes.push(trim);
+  ambLoop(ctx, buf, trim, ambCtxNodes);
+  ambVol.gain.value = ambLevel();
+  try {
+    await ambAudioEl.play();
+  } catch (e) {
+    log("⚠️ 环境音播不出来: " + e.message);
+  }
+  await ambRoute();
+}
+
+// audioCtx 一关，下面这些节点就全废了，引用必须一起清掉，
+// 否则下一通 ambEnsure() 看见 ambDest 还在就直接返回，
+// 往一个已经关掉的 context 上接节点，不报错但没声音
+function ambShutdown() {
+  ambStop();
+  ambDest = null;
+  ambVol = null;
+  ambFade = null;
+  ambAudioEl = null;
+}
+
+function ambStop() {
+  // 试听中直接拨号会走到这里，按钮得跟着复位，
+  // 不然一直挂着"停止"，看着像还在放
+  ambDemoBtn.textContent = "▶ 试听";
+  ambTeardown();
+  ambCurrent = "";
+  if (ambFade) ambFade.gain.value = 0;
+  clearInterval(ambTimer);
+  ambTimer = null;
+}
+
+// 跟 AI 声音走同一个输出设备，不然环境音从扬声器出、AI 从 CABLE 出，
+// 对方只听得到干净的 AI 声，白做
+async function ambRoute() {
+  const outId = outputSelect.value;
+  if (ambAudioEl && outId && typeof ambAudioEl.setSinkId === "function") {
+    try {
+      await ambAudioEl.setSinkId(outId);
+    } catch (e) {
+      log("⚠️ 环境音设置输出设备失败: " + e.message);
+    }
+  }
+}
+
+// 滑块 0–100 映射到 0–0.65，默认 35% 大约是 -44 dBFS。
+//
+// 上限压得低是有实测依据的：AI 说话时的有声 RMS，中文音色 -20.5 dBFS，
+// 英文音色只有 -33.3 dBFS——英文本身就比中文轻 13dB。环境音只能按更轻的
+// 那头定，不然中文听着刚好的音量，换到英文就盖过 AI 了。
+// 嫌轻就往上推滑块，反正只影响本地
+function ambLevel() {
+  return (Number(ambVolInput.value) / 100) * 0.65;
+}
+
+// 开关判据用"播放队列里还有没有排着的音频"，不用 state=SPEAKING：
+// 服务端的 SPEAKING 结束时，本地队列往往还剩几百毫秒没播完，
+// 按 state 关会在 AI 话还没说完的时候把背景切掉，很突兀
+function ambSpeaking() {
+  if (!audioCtx) return false;
+  if (playPaused) return false;
+  return playCursor > audioCtx.currentTime + 0.01;
+}
+
+function ambTick() {
+  if (!ambFade || !ambCurrent) return;
+  const now = audioCtx ? audioCtx.currentTime : 0;
+  let on;
+  if (ambAlwaysBox.checked) on = true;
+  else {
+    if (ambSpeaking()) ambSpokeAt = now;
+    // 说完再拖 0.4 秒才淡出。话音一落背景就没了，比一直没有还假
+    on = ambSpokeAt > 0 && now - ambSpokeAt < 0.4;
+  }
+  const target = on ? 1 : 0;
+  // setTargetAtTime 是指数逼近，时间常数取小一点：淡入快、淡出慢
+  ambFade.gain.setTargetAtTime(target, now, on ? 0.12 : 0.25);
+  ambVol.gain.value = ambLevel();
+}
+
+function ambSync() {
+  localStorage.setItem(AMB_KEY, ambProfileSel.value);
+  localStorage.setItem(AMB_VOL_KEY, ambVolInput.value);
+  localStorage.setItem(AMB_ALWAYS_KEY, ambAlwaysBox.checked ? "1" : "");
+  const off = ambProfileSel.value === "off";
+  ambHint.textContent = off
+    ? "不加环境音，对方听到的是全干净的声音"
+    : (ambCurrent ? `这通抽中「${ambCurrent}」` : "拨号时抽") +
+      `　音量 ${ambVolInput.value}%` +
+      (ambAlwaysBox.checked ? "　全程" : "　只在 AI 说话时");
+  if (ambVol) ambVol.gain.value = ambLevel();
+}
+
+ambProfileSel.value = localStorage.getItem(AMB_KEY) || "random";
+ambVolInput.value = localStorage.getItem(AMB_VOL_KEY) || "35";
+ambAlwaysBox.checked = !!localStorage.getItem(AMB_ALWAYS_KEY);
+ambSync();
+ambVolInput.addEventListener("input", ambSync);
+ambAlwaysBox.addEventListener("change", ambSync);
+// 通话中换 profile 直接重抽重建：环境音全在本地，改它不影响链路
+ambProfileSel.addEventListener("change", async () => {
+  ambSync();
+  if (running) {
+    const name = ambPick();
+    await ambStart(name);
+    if (name) {
+      ambTimer = setInterval(ambTick, 120);
+      log(`🎚️ 环境音换成「${name}」`, "msg-sys");
+    }
+    ambSync();
+  }
+});
+
+// 试听：不用真打一通就能把音量调好。按"全程"那档放，方便听清楚
+ambDemoBtn.addEventListener("click", async () => {
+  if (ambDemoBtn.textContent.startsWith("⏹")) {
+    ambStop();
+    ambDemoBtn.textContent = "▶ 试听";
+    return;
+  }
+  const name = ambPick();
+  if (!name) {
+    log("环境音是关闭的，没得试听", "msg-sys");
+    return;
+  }
+  await ambStart(name);
+  ambFade.gain.setTargetAtTime(1, audioCtx.currentTime, 0.12);
+  ambDemoBtn.textContent = "⏹ 停止";
+  ambSync();
+  log(`🎧 试听环境音「${name}」，音量 ${ambVolInput.value}%`, "msg-sys");
+});
+
 // ================= 音色选择 =================
 // 火山的音色列表在 public/voices.json（从控制台导出后整理的）。
 // 里面每个 code 都真连过一次 tts/bidirection：控制台会列出一些
@@ -1317,6 +1640,14 @@ function handleEvent(evt) {
           (relayStartedAt ? `，耗时 ${(performance.now() - relayStartedAt).toFixed(0)}ms` : ""),
         "msg-sys"
       );
+      (async () => {
+        const name = ambPick();
+        if (!name) return;
+        await ambStart(name);
+        ambTimer = setInterval(ambTick, 120);
+        ambSync();
+        log(`🎚️ 这通的环境音：${name}`, "msg-sys");
+      })();
       if (evt.nameRejected) {
         log(
           `⚠️ 服务端不认这个称呼「${evt.nameRejected}」，这通会用提示词里的默认名`,
@@ -1461,6 +1792,8 @@ function stop() {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
     ws = null;
   }
+  ambShutdown();
+  ambDemoBtn.textContent = "▶ 试听";
   stopCapture();
   teardownPlayback();
   stopMeters();
