@@ -771,6 +771,9 @@ function stopMeters() {
 
 // ================= 音色选择 =================
 // 火山的音色列表在 public/voices.json（从控制台导出后整理的）。
+// 里面每个 code 都真连过一次 tts/bidirection：控制台会列出一些
+// 双向流式根本不支持的音色，选中了要到通话第一句才报 45002000，
+// 所以不支持的直接不进这个文件。加新音色时记得也验一遍。
 // 选中的音色不走 .env，而是在建连时挂在 WebSocket 的 query 上传给服务端——
 // 因为 CallSession 在连接建立那一刻就要拿着音色把 TTS 会话开出去，
 // 连上以后再发消息就晚了，第一句已经用默认音色念出去了。
@@ -836,6 +839,7 @@ const SCENE_ORDER = [
   "客服场景",
   "多情感",
   "角色扮演",
+  "趣味口音",
   "有声阅读",
   "视频配音",
   "教育场景",
@@ -855,6 +859,7 @@ function renderVoices(keyword) {
     !kw ||
     v.name.includes(kw) ||
     v.scene.includes(kw) ||
+    (v.desc || "").includes(kw) ||
     v.sex === kw ||
     v.code.includes(kw.toLowerCase());
 
@@ -914,7 +919,7 @@ function voiceName(code) {
 
 function updateVoiceHint() {
   const v = currentVoice();
-  voiceHint.textContent = v ? v.code : "";
+  voiceHint.textContent = v ? (v.desc ? `${v.desc} · ${v.code}` : v.code) : "";
   if (v) localStorage.setItem(VOICE_KEY, v.code);
 }
 
