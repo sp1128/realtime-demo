@@ -901,12 +901,13 @@ function ambLoop(ctx, buf, out, keep) {
   keep.push({ stop: () => { stopped = true; clearInterval(t); } });
 }
 
-// 环境音不接 aiGain，直接自己开一条到输出设备：
+// 环境音不接 aiGain：
 //   1. 接 aiGain 会被音量条算进"AI 音量"，看着像 AI 一直在说话
 //   2. 打断时 stopSources() 会把 aiGain 上挂的源全停掉，环境音会跟着断
+// 但通话中要接 aiDest —— 见 ambConnectSink()
 async function ambEnsure() {
   const ctx = await ensureAudioCtx();
-  if (ambDest) return ctx;
+  if (ambLimiter) return ctx;
   ambVol = ctx.createGain();
   ambVol.gain.value = 0;
   ambFade = ctx.createGain();
@@ -927,12 +928,61 @@ async function ambEnsure() {
   ambLimiter.attack.value = 0.003;
   ambLimiter.release.value = 0.25;
   ambVol.connect(ambLimiter);
-  ambDest = ctx.createMediaStreamDestination();
-  ambLimiter.connect(ambDest);
-  ambAudioEl = new Audio();
-  ambAudioEl.srcObject = ambDest.stream;
-  ambAudioEl.autoplay = true;
   return ctx;
+}
+
+// 出口分两种情况，区别只在于要不要自己再 setSinkId 一次：
+//
+// 通话中直接并进 aiDest —— AI 语音本来就走那条 MediaStream，
+// 而且 start() 是在"开始通话"的点击处理函数里给它 setSinkId 的，还在手势
+// 有效期内。环境音自己开一条流的话，setSinkId 得等 ready 事件回来才调，
+// 那时候手势早过期了：手机上直接抛 "A user gesture is required"，
+// 于是环境音去了默认扬声器而不是选定的输出设备。
+// 电脑上碰巧不报，是因为桌面 Chrome 对 setSinkId 没有手势要求——
+// 同一段代码两个平台两种行为，正是这次问题的由来。
+//
+// 并进 aiDest 不会污染音量条（表接在 aiGain 上），也不会被打断时的
+// stopSources() 停掉（那个只动挂在 aiGain 上的源）。
+//
+// 试听没有通话，只能自己开一条；但试听是点击触发的，手势有效，setSinkId 没问题
+async function ambConnectSink(ctx) {
+  try {
+    ambLimiter.disconnect();
+  } catch (e) {}
+
+  if (running && aiDest) {
+    ambLimiter.connect(aiDest);
+    // 通话中用不上自己那条，停掉免得两条流同时出声
+    if (ambAudioEl) {
+      try {
+        ambAudioEl.pause();
+      } catch (e) {}
+    }
+    return;
+  }
+
+  if (!ambDest) {
+    ambDest = ctx.createMediaStreamDestination();
+    ambAudioEl = new Audio();
+    ambAudioEl.srcObject = ambDest.stream;
+    ambAudioEl.autoplay = true;
+  }
+  ambLimiter.connect(ambDest);
+  try {
+    await ambAudioEl.play();
+  } catch (e) {
+    log("⚠️ 环境音播不出来: " + e.message);
+  }
+  const outId = outputSelect.value;
+  if (outId && typeof ambAudioEl.setSinkId === "function") {
+    try {
+      await ambAudioEl.setSinkId(outId);
+    } catch (e) {
+      // 手机上没有输出设备可选，失败了也就是走默认输出，没有实际影响。
+      // 降级成调试日志，别在正常通话里刷警告
+      dbg("环境音设置输出设备失败（走默认输出）: " + e.message);
+    }
+  }
 }
 
 function ambTeardown() {
@@ -977,12 +1027,7 @@ async function ambStart(name) {
   ambCtxNodes.push(trim);
   ambLoop(ctx, buf, trim, ambCtxNodes);
   ambVol.gain.value = ambLevel();
-  try {
-    await ambAudioEl.play();
-  } catch (e) {
-    log("⚠️ 环境音播不出来: " + e.message);
-  }
-  await ambRoute();
+  await ambConnectSink(ctx);
 }
 
 // audioCtx 一关，下面这些节点就全废了，引用必须一起清掉，
@@ -1001,6 +1046,7 @@ function ambShutdown() {
       ambAudioEl.srcObject = null;
     } catch (e) {}
   }
+  // ambLimiter 通话中是接在 aiDest 上的，这里 disconnect 才算摘干净
   for (const n of [ambVol, ambFade, ambLimiter]) {
     try {
       if (n) n.disconnect();
@@ -1029,19 +1075,6 @@ function ambStop() {
     try {
       ambAudioEl.pause();
     } catch (e) {}
-  }
-}
-
-// 跟 AI 声音走同一个输出设备，不然环境音从扬声器出、AI 从 CABLE 出，
-// 对方只听得到干净的 AI 声，白做
-async function ambRoute() {
-  const outId = outputSelect.value;
-  if (ambAudioEl && outId && typeof ambAudioEl.setSinkId === "function") {
-    try {
-      await ambAudioEl.setSinkId(outId);
-    } catch (e) {
-      log("⚠️ 环境音设置输出设备失败: " + e.message);
-    }
   }
 }
 
